@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spectra-cli"
+version = "0.1.0"
+description = "Generate production-ready DevOps files for your projects using AI"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Spectra Team"}
+]
+keywords = ["devops", "docker", "ci-cd", "cli", "automation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: System :: Systems Administration",
+]
+
+dependencies = [
+    "typer[all]>=0.9.0",
+    "httpx>=0.26.0",
+    "rich>=13.7.0",
+]
+
+[project.scripts]
+spectra = "spectra.main:main"
+
+[project.urls]
+Homepage = "https://github.com/yourusername/spectra-cli"
+Documentation = "https://github.com/yourusername/spectra-cli#readme"
+Repository = "https://github.com/yourusername/spectra-cli"
+Issues = "https://github.com/yourusername/spectra-cli/issues"
+
+[tool.setuptools]
+packages = ["spectra"]
+
+[tool.setuptools.package-data]
+spectra = ["py.typed"]
+
