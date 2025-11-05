@@ -16,7 +16,29 @@ Spectra CLI scans your project, identifies the tech stack, and automatically gen
 
 ## Installation
 
-### Option 1: Install from Source (Development)
+### Option 1: Global install (recommended for users)
+
+Install via pipx (isolated global CLI):
+
+```bash
+# Install pipx if needed
+python3 -m pip install --user pipx && python3 -m pipx ensurepath
+
+# Install the Spectra CLI globally (after PyPI publish)
+pipx install spectra-cli
+
+# Use from any project
+spectra init
+```
+
+If you prefer using pip:
+
+```bash
+pip install --user spectra-cli
+spectra init
+```
+
+### Option 2: Install from Source (Development)
 
 ```bash
 # Clone the repository
@@ -34,7 +56,7 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-### Option 2: Install via pip (Production)
+### Option 3: Install via pip (Production)
 
 ```bash
 pip install spectra-cli

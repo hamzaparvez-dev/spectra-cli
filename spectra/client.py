@@ -6,12 +6,18 @@ from typing import Optional, Dict, Any
 from rich.panel import Panel
 from rich import print
 
-# The 'brain' API URL. We'll set this in our environment.
-# For local testing: http://127.0.0.1:8000/
-# For production: (Vercel URL)
+# The 'brain' API URL. Set SPECTRA_API_URL environment variable to configure.
+# Default is the stable production domain to make the CLI work out-of-the-box.
+# For local development, override with: export SPECTRA_API_URL=http://127.0.0.1:8000/
 def get_api_url() -> str:
-    """Get and normalize the API URL."""
-    url = os.getenv("SPECTRA_API_URL", "http://127.0.0.1:8000/")
+    """
+    Get and normalize the API URL.
+    
+    Uses SPECTRA_API_URL environment variable if set.
+    Defaults to the stable production URL so the CLI works without extra setup.
+    For local development, set SPECTRA_API_URL to http://127.0.0.1:8000/.
+    """
+    url = os.getenv("SPECTRA_API_URL", "https://spectra-cli.vercel.app/")
     # Ensure URL ends with / for consistency
     if not url.endswith('/'):
         url += '/'

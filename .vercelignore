@@ -1,0 +1,15 @@
+pyproject.toml
+setup.py
+spectra/
+spectra_cli.egg-info/
+.venv/
+venv/
+requirements.txt
+!api/requirements.txt
+*.egg-info/
+.pytest_cache/
+.coverage
+__pycache__/
+*.pyc
+pyproject.toml
+setup.py

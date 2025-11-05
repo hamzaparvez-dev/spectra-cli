@@ -3,7 +3,7 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from openai import OpenAI
+import google.generativeai as genai
 from typing import Optional
 import os
 import json
@@ -13,13 +13,14 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize OpenAI client (will be created lazily if API key is available)
-def get_openai_client() -> OpenAI:
-    """Get or create OpenAI client with API key validation."""
-    api_key = os.getenv("OPENAI_API_KEY")
+# Initialize Gemini client (will be created lazily if API key is available)
+def get_gemini_client():
+    """Get or configure Gemini client with API key validation."""
+    api_key = os.getenv("OPENAI_API_KEY")  # Keep variable name as requested
     if not api_key:
         raise ValueError("OPENAI_API_KEY environment variable is not set")
-    return OpenAI(api_key=api_key)
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel('gemini-pro')
 
 app = FastAPI(
     title="Spectra API",
@@ -52,7 +53,7 @@ class DevOpsFiles(BaseModel):
 
 def get_llm_response(context: ProjectContext) -> DevOpsFiles:
     """
-    Calls the OpenAI API to generate the DevOps files.
+    Calls the Gemini API to generate the DevOps files.
     
     Args:
         context: Project context containing stack and files
@@ -61,15 +62,15 @@ def get_llm_response(context: ProjectContext) -> DevOpsFiles:
         DevOpsFiles object with generated content
         
     Raises:
-        HTTPException: If API key is missing or OpenAI call fails
+        HTTPException: If API key is missing or Gemini call fails
     """
     try:
-        openai_client = get_openai_client()
+        model = get_gemini_client()
     except ValueError:
         logger.error("OPENAI_API_KEY is not set!")
         raise HTTPException(
             status_code=500,
-            detail="OpenAI API key is not configured on the server."
+            detail="API key is not configured on the server."
         )
 
     # Convert file context to a more readable string for the prompt
@@ -100,21 +101,27 @@ Instructions:
 Return ONLY the valid JSON object with these exact keys: dockerfile, compose, github_action.
 Example format: {{"dockerfile": "FROM...", "compose": "version: '3.8'...", "github_action": "name: CI/CD..."}}"""
     
+    # Combine system and user prompts for Gemini
+    full_prompt = f"{system_prompt}\n\n{user_prompt}"
+    
     try:
-        logger.info(f"Calling OpenAI API for stack: {context.stack}")
-        response = openai_client.chat.completions.create(
-            model="gpt-4-turbo-preview",  # Using the latest available model
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.1,
-            max_tokens=4000
+        logger.info(f"Calling Gemini API for stack: {context.stack}")
+        response = model.generate_content(
+            full_prompt,
+            generation_config={
+                "temperature": 0.1,
+                "max_output_tokens": 4000,
+            }
         )
         
-        response_json_str = response.choices[0].message.content
+        response_json_str = response.text.strip()
         logger.info("AI Response received successfully")
+        
+        # Clean up response if it has markdown code blocks
+        if response_json_str.startswith("```json"):
+            response_json_str = response_json_str.replace("```json", "").replace("```", "").strip()
+        elif response_json_str.startswith("```"):
+            response_json_str = response_json_str.replace("```", "").strip()
         
         # Parse the JSON string from the LLM
         data = json.loads(response_json_str)
@@ -126,13 +133,13 @@ Example format: {{"dockerfile": "FROM...", "compose": "version: '3.8'...", "gith
         )
         
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON response from OpenAI: {e}")
+        logger.error(f"Failed to parse JSON response from Gemini: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to parse AI response: {e}"
         )
     except Exception as e:
-        logger.error(f"Error calling OpenAI or parsing response: {e}")
+        logger.error(f"Error calling Gemini or parsing response: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"AI model error: {str(e)}"
@@ -200,4 +207,8 @@ def root():
             "GET /health": "Health check"
         }
     }
+
+
+# Export FastAPI app directly; Vercel detects ASGI apps
+# Do not export a symbol named 'handler' to avoid runtime detection issues
 
