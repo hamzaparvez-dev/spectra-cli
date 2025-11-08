@@ -354,7 +354,69 @@ Return ONLY valid JSON with keys: dockerfile, compose, github_action."""
 
             @app.get("/")
             def root():
-                return {"service": "Spectra API", "version": "0.2.0", "endpoints": ["POST /", "POST /jobs", "GET /job/{id}", "POST /process/{id}", "GET /health"]}
+                """Return HTML page for browser access, JSON for API clients."""
+                from fastapi.responses import HTMLResponse
+                html_content = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Spectra API</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; background: #f5f5f5; }
+        .container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1 { color: #333; margin-top: 0; }
+        .status { display: inline-block; padding: 5px 10px; background: #10b981; color: white; border-radius: 4px; font-size: 14px; }
+        .endpoint { background: #f9fafb; padding: 15px; margin: 10px 0; border-radius: 4px; border-left: 3px solid #3b82f6; }
+        .method { display: inline-block; padding: 3px 8px; background: #3b82f6; color: white; border-radius: 3px; font-size: 12px; font-weight: bold; margin-right: 10px; }
+        code { background: #f3f4f6; padding: 2px 6px; border-radius: 3px; font-family: 'Monaco', 'Courier New', monospace; }
+        .test-btn { display: inline-block; margin-top: 10px; padding: 8px 16px; background: #3b82f6; color: white; text-decoration: none; border-radius: 4px; }
+        .test-btn:hover { background: #2563eb; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Spectra API</h1>
+        <p><span class="status">✓ Online</span> Version 0.2.0</p>
+        
+        <h2>API Endpoints</h2>
+        
+        <div class="endpoint">
+            <span class="method">POST</span> <code>/</code>
+            <p>Main endpoint - Generate DevOps files or create async job</p>
+        </div>
+        
+        <div class="endpoint">
+            <span class="method">POST</span> <code>/jobs</code>
+            <p>Create a new job (same as POST /)</p>
+        </div>
+        
+        <div class="endpoint">
+            <span class="method">GET</span> <code>/job/{job_id}</code>
+            <p>Get job status and result</p>
+        </div>
+        
+        <div class="endpoint">
+            <span class="method">POST</span> <code>/process/{job_id}</code>
+            <p>Trigger job processing</p>
+        </div>
+        
+        <div class="endpoint">
+            <span class="method">GET</span> <code>/health</code>
+            <p>Health check endpoint</p>
+        </div>
+        
+        <h2>Quick Test</h2>
+        <p>Test the API health endpoint:</p>
+        <a href="/health" class="test-btn">Test Health Endpoint</a>
+        
+        <h2>Documentation</h2>
+        <p>This is a REST API for the Spectra CLI tool. Use HTTP clients (curl, Postman, or the Spectra CLI) to interact with the endpoints.</p>
+        <p>For API documentation, see the <a href="https://github.com/hamzaparvez-dev/spectra-cli">GitHub repository</a>.</p>
+    </div>
+</body>
+</html>
+                """
+                return HTMLResponse(content=html_content)
 
             try:
                 from mangum import Mangum
@@ -376,7 +438,9 @@ Return ONLY valid JSON with keys: dockerfile, compose, github_action."""
                 @app.get("/health")
                 def h(): return {"status": "ok", "mode": "minimal"}
                 @app.get("/")
-                def r(): return {"service": "Spectra API", "status": "minimal"}
+                def r():
+                    from fastapi.responses import HTMLResponse
+                    return HTMLResponse(content="<html><body><h1>Spectra API</h1><p>Status: Minimal Mode</p><p><a href='/health'>Health Check</a></p></body></html>")
             elif FALLBACK_MODE:
                 try:
                     from fastapi import FastAPI
