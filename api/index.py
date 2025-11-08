@@ -65,9 +65,14 @@ try:
     from templates import get_template
     from job_queue import create_job, get_job, update_job_status
     IMPORTS_OK = True
+    logger.info("Successfully imported all required modules")
 except ImportError as e:
     IMPORTS_OK = False
-    logger.error(f"Failed to import modules: {e}")
+    logger.error(f"Failed to import modules: {e}", exc_info=True)
+    # Log the import path for debugging
+    logger.error(f"Current sys.path: {sys.path}")
+    logger.error(f"Current working directory: {os.getcwd()}")
+    logger.error(f"__file__: {__file__ if '__file__' in globals() else 'N/A'}")
 except Exception as e:
     # Catch any other exceptions during import to prevent module load failure
     IMPORTS_OK = False
@@ -674,18 +679,98 @@ def handler(event=None, context=None):
             })
         }
 
-# Ensure app is properly exported for Vercel
-# Vercel Python runtime will use the 'app' variable if it's an ASGI application
-# If app is None, Vercel will use the handler function instead
-if app is None and not FALLBACK_MODE:
-    # If app wasn't created but we're not in fallback mode, try to create a minimal one
+# CRITICAL: Ensure app is ALWAYS a valid FastAPI instance for Vercel
+# Vercel Python runtime requires the 'app' variable to be a valid ASGI application
+# If app is None, Vercel will return a 500 error
+if app is None:
+    # Create a minimal FastAPI app as a last resort
+    # This ensures Vercel always has a valid app to work with
     try:
-        from fastapi import FastAPI
-        app = FastAPI(title="Spectra API", version="0.2.0")
-        logger.warning("Created minimal FastAPI app as fallback")
+        if not FALLBACK_MODE:
+            # Try to import FastAPI again
+            from fastapi import FastAPI
+            app = FastAPI(title="Spectra API", version="0.2.0")
+            logger.warning("Created minimal FastAPI app as fallback - some features may be unavailable")
+            
+            # Add a basic health endpoint
+            @app.get("/health")
+            def health_check():
+                return {"status": "ok", "service": "spectra-api", "version": "0.2.0", "mode": "minimal"}
+            
+            @app.get("/")
+            def root():
+                return {
+                    "service": "Spectra API",
+                    "version": "0.2.0",
+                    "status": "minimal_mode",
+                    "error": "Full API initialization failed. Check logs for details."
+                }
+        else:
+            # Even in fallback mode, try to create a minimal app
+            # This is better than None for Vercel
+            try:
+                from fastapi import FastAPI
+                app = FastAPI(title="Spectra API", version="0.2.0")
+                logger.warning("Created minimal FastAPI app in fallback mode")
+                
+                @app.get("/health")
+                def health_check():
+                    return {"status": "ok", "service": "spectra-api", "version": "0.2.0", "mode": "fallback"}
+                
+                @app.get("/")
+                def root():
+                    return {
+                        "service": "Spectra API",
+                        "version": "0.2.0",
+                        "status": "fallback_mode",
+                        "error": "FastAPI dependencies not available"
+                    }
+            except Exception as inner_e:
+                logger.error(f"Failed to create minimal FastAPI app even in fallback: {inner_e}")
+                # Last resort: create a mock app object that at least has the ASGI interface
+                # This prevents Vercel from crashing with app=None
+                class MinimalASGIApp:
+                    def __init__(self):
+                        self.title = "Spectra API"
+                        self.version = "0.2.0"
+                    async def __call__(self, scope, receive, send):
+                        if scope["type"] == "http":
+                            response_body = json.dumps({
+                                "error": "Service unavailable",
+                                "message": "FastAPI initialization failed"
+                            }).encode()
+                            await send({
+                                "type": "http.response.start",
+                                "status": 503,
+                                "headers": [[b"content-type", b"application/json"]],
+                            })
+                            await send({
+                                "type": "http.response.body",
+                                "body": response_body,
+                            })
+                app = MinimalASGIApp()
+                logger.error("Created minimal ASGI app wrapper as absolute last resort")
     except Exception as e:
-        # This prevents module import failures
-        # The handler function is always defined above at line 581
-        # No additional fallback is needed here
-        logger.error(f"Failed to create minimal FastAPI app: {e}")
-        app = None
+        logger.error(f"CRITICAL: Failed to create any FastAPI app: {e}", exc_info=True)
+        # Create a minimal ASGI-compatible object to prevent Vercel crash
+        class MinimalASGIApp:
+            def __init__(self):
+                self.title = "Spectra API"
+                self.version = "0.2.0"
+            async def __call__(self, scope, receive, send):
+                if scope["type"] == "http":
+                    response_body = json.dumps({
+                        "error": "Service unavailable",
+                        "message": "Critical initialization failure"
+                    }).encode()
+                    await send({
+                        "type": "http.response.start",
+                        "status": 503,
+                        "headers": [[b"content-type", b"application/json"]],
+                    })
+                    await send({
+                        "type": "http.response.body",
+                        "body": response_body,
+                    })
+        app = MinimalASGIApp()
+        logger.error("Created minimal ASGI app wrapper as absolute last resort")
