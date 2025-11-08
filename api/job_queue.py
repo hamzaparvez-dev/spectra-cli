@@ -28,8 +28,6 @@ def _initialize_redis():
     if redis_client is not None:
         return
     
-        return
-    
     try:
         import redis
         REDIS_URL = os.getenv("UPSTASH_REDIS_URL")

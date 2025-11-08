@@ -267,18 +267,24 @@ Example format: {{"dockerfile": "FROM...", "compose": "version: '3.8'...", "gith
         
         def _call_gemini_sync():
             """Synchronous wrapper for Gemini API call to run in thread pool."""
-            logger.info(f"Calling Gemini API for stack: {context.stack}")
-            # Use gemini-1.5-flash optimized config for faster responses
-            response = model.generate_content(
-                full_prompt,
-                generation_config={
-                    "temperature": 0.1,
-                    "max_output_tokens": 3000,
-                    "top_p": 0.95,
-                    "top_k": 40,
-                }
-            )
-            return response.text.strip()
+            try:
+                logger.info(f"Calling Gemini API for stack: {context.stack}")
+                # Use gemini-2.5-flash optimized config for faster responses
+                response = model.generate_content(
+                    full_prompt,
+                    generation_config={
+                        "temperature": 0.1,
+                        "max_output_tokens": 3000,
+                        "top_p": 0.95,
+                        "top_k": 40,
+                    }
+                )
+                if not response or not hasattr(response, 'text'):
+                    raise ValueError("Invalid response from Gemini API: missing text attribute")
+                return response.text.strip()
+            except Exception as e:
+                logger.error(f"Gemini API call failed: {e}", exc_info=True)
+                raise
         
         try:
             # Run the blocking Gemini API call in a thread pool with timeout
@@ -356,21 +362,35 @@ Example format: {{"dockerfile": "FROM...", "compose": "version: '3.8'...", "gith
             logger.info(f"Processing project with stack: {context.stack}")
             
             # Priority 1: Check template cache first (instant response for 80% of users)
-            template = get_template(context.stack)
-            if template:
-                logger.info(f"Returning cached template for stack: {context.stack}")
-                return template.dict()
+            try:
+                template = get_template(context.stack)
+                if template:
+                    logger.info(f"Returning cached template for stack: {context.stack}")
+                    return template.dict()
+            except Exception as template_error:
+                logger.warning(f"Error checking template cache: {template_error}. Continuing with job creation.")
             
             # Priority 2: Create async job for custom stacks
             logger.info(f"No template found for stack: {context.stack}, creating async job")
-            job_id = create_job(context.dict())
+            try:
+                context_dict = context.dict() if hasattr(context, 'dict') else dict(context)
+                job_id = create_job(context_dict)
+                
+                # Return job_id for polling
+                return {
+                    "job_id": job_id,
+                    "status": "pending"
+                }
+            except Exception as job_error:
+                logger.error(f"Failed to create job: {job_error}", exc_info=True)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to create processing job: {str(job_error)}"
+                )
             
-            # Return job_id for polling
-            return {
-                "job_id": job_id,
-                "status": "pending"
-            }
-            
+        except HTTPException:
+            # Re-raise HTTPExceptions as-is
+            raise
         except ValueError as e:
             logger.error(f"Validation error: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid request data: {e}")
@@ -396,8 +416,16 @@ Example format: {{"dockerfile": "FROM...", "compose": "version: '3.8'...", "gith
             return template
         
         # Create job
-        job_id = create_job(context.dict())
-        return JobResponse(job_id=job_id, status="pending")
+        try:
+            context_dict = context.dict() if hasattr(context, 'dict') else dict(context)
+            job_id = create_job(context_dict)
+            return JobResponse(job_id=job_id, status="pending")
+        except Exception as e:
+            logger.error(f"Failed to create job: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to create job: {str(e)}"
+            )
 
     @app.get("/job/{job_id}")
     async def get_job_status(job_id: str):
@@ -504,13 +532,18 @@ Example format: {{"dockerfile": "FROM...", "compose": "version: '3.8'...", "gith
             }
         }
 
-    # Export handler for Vercel - Prefer Mangum if available, otherwise expose ASGI app
+    # Export handler for Vercel
+    # Vercel Python runtime supports ASGI apps directly, but we also support Mangum for AWS Lambda compatibility
+    _mangum_available = False
+    mangum_handler = None
+    
     try:
         from mangum import Mangum
         mangum_handler = Mangum(app, lifespan="off")
         _mangum_available = True
+        logger.info("Mangum handler initialized successfully")
     except Exception as e:
-        logger.error(f"Mangum not available or failed to initialize: {e}")
+        logger.warning(f"Mangum not available: {e}. Vercel will use ASGI app directly.")
         _mangum_available = False
         mangum_handler = None
 else:
@@ -518,40 +551,65 @@ else:
     _mangum_available = False
     mangum_handler = None
 
-# Handler must be defined at module level for Vercel
-def handler(event, context):
-    """Vercel serverless function handler."""
-    if FALLBACK_MODE:
-        # Minimal fallback handler when FastAPI is not available
-        try:
-            path = (event or {}).get('rawPath') or (event or {}).get('path') or '/'
+# For Vercel Python runtime, we can export the app directly as ASGI
+# But we also provide a handler function for compatibility
+# Vercel will use the app directly if available, otherwise fall back to handler
+
+# Handler function for Vercel (used when ASGI app is not directly supported)
+def handler(event=None, context=None):
+    """
+    Vercel serverless function handler.
+    
+    Handles both AWS Lambda format (event, context) and Vercel format.
+    Vercel passes event as a dict with request information.
+    """
+    try:
+        # Normal mode - use Mangum if available (preferred for FastAPI)
+        if not FALLBACK_MODE and _mangum_available and mangum_handler:
+            try:
+                # Mangum expects AWS Lambda format, but Vercel uses a different format
+                # Convert Vercel event to Lambda format if needed
+                result = mangum_handler(event, context)
+                # Ensure proper response format for Vercel
+                if isinstance(result, dict) and "statusCode" in result:
+                    return result
+                # If Mangum returns a different format, wrap it
+                return {
+                    "statusCode": 200,
+                    "headers": {"content-type": "application/json"},
+                    "body": json.dumps(result) if not isinstance(result, str) else result
+                }
+            except Exception as e:
+                logger.error(f"Mangum handler error: {e}", exc_info=True)
+                # Fall through to fallback handler
+                pass
+        
+        # Fallback handler when Mangum is not available or failed
+        if FALLBACK_MODE:
+            # Minimal fallback handler when FastAPI is not available
+            path = (event or {}).get('rawPath') or (event or {}).get('path') or (event or {}).get('url', {}).get('path', '/')
             if path in ('/', '/health'):
                 body = json.dumps({
                     "status": "ok",
                     "service": "spectra-api",
                     "version": "0.2.0"
                 }) if path == '/health' else json.dumps({"service": "Spectra API", "version": "0.2.0"})
-                return {"statusCode": 200, "headers": {"content-type": "application/json"}, "body": body}
-            return {"statusCode": 503, "headers": {"content-type": "application/json"}, "body": json.dumps({"error": "Service initializing"})}
-        except Exception as ex:
-            logger.error(f"Fallback minimal handler error: {ex}")
-            return {"statusCode": 500, "headers": {"content-type": "application/json"}, "body": json.dumps({"error": str(ex)})}
-    
-    # Normal mode - use Mangum if available
-    if not FALLBACK_MODE and _mangum_available and mangum_handler:
-        try:
-            return mangum_handler(event, context)
-        except Exception as e:
-            logger.error(f"Handler error: {e}", exc_info=True)
+                return {
+                    "statusCode": 200,
+                    "headers": {"content-type": "application/json"},
+                    "body": body
+                }
             return {
-                "statusCode": 500,
-                "body": json.dumps({"error": str(e)})
+                "statusCode": 503,
+                "headers": {"content-type": "application/json"},
+                "body": json.dumps({"error": "Service initializing - FastAPI not available"})
             }
-    
-    # Fallback handler when Mangum is not available but FastAPI is
-    try:
-        path = (event or {}).get('rawPath') or (event or {}).get('path') or '/'
-        method = (event or {}).get('requestContext', {}).get('http', {}).get('method') or (event or {}).get('httpMethod') or 'GET'
+        
+        # Fallback when FastAPI is available but Mangum failed
+        # This should not happen in normal operation, but handle gracefully
+        path = (event or {}).get('rawPath') or (event or {}).get('path') or (event or {}).get('url', {}).get('path', '/')
+        method = (event or {}).get('requestContext', {}).get('http', {}).get('method') or (event or {}).get('httpMethod') or (event or {}).get('method', 'GET')
+        
         if method == 'GET' and path in ('/health', '/'):
             body = json.dumps({
                 "status": "ok",
@@ -568,8 +626,36 @@ def handler(event, context):
                     "GET /health": "Health check"
                 }
             })
-            return {"statusCode": 200, "headers": {"content-type": "application/json"}, "body": body}
-        return {"statusCode": 503, "headers": {"content-type": "application/json"}, "body": json.dumps({"error": "Service initializing"})}
+            return {
+                "statusCode": 200,
+                "headers": {"content-type": "application/json"},
+                "body": body
+            }
+        
+        return {
+            "statusCode": 503,
+            "headers": {"content-type": "application/json"},
+            "body": json.dumps({"error": "Service initializing - Mangum handler unavailable"})
+        }
+        
     except Exception as ex:
-        logger.error(f"Fallback handler error: {ex}")
-        return {"statusCode": 500, "headers": {"content-type": "application/json"}, "body": json.dumps({"error": str(ex)})}
+        logger.error(f"Fatal error in handler: {ex}", exc_info=True)
+        return {
+            "statusCode": 500,
+            "headers": {"content-type": "application/json"},
+            "body": json.dumps({
+                "error": "Internal server error",
+                "message": str(ex) if os.getenv("DEBUG", "false").lower() == "true" else "An error occurred"
+            })
+        }
+
+# Export app for Vercel ASGI support (Vercel Python runtime can use ASGI apps directly)
+# This allows Vercel to use the FastAPI app without going through the handler function
+if not FALLBACK_MODE:
+    # App is already defined in the if block above
+    # Vercel will automatically detect and use the 'app' variable if it's an ASGI application
+    pass
+else:
+    # In fallback mode, create a minimal app-like object for Vercel
+    # This ensures the module can be imported without errors
+    app = None
