@@ -7,6 +7,7 @@ import sys
 import os
 import json
 import traceback
+import importlib.util
 
 # Initialize app to None - will be set below
 app = None
@@ -25,28 +26,51 @@ def _create_minimal_asgi_app():
                 await send({"type": "http.response.body", "body": body})
     return MinimalASGIApp()
 
+# Safe import function that catches ALL errors
+def _safe_import(module_name):
+    """Safely import a module, returning None if import fails."""
+    try:
+        try:
+            api_dir = os.path.dirname(os.path.abspath(__file__))
+            if api_dir and api_dir not in sys.path:
+                sys.path.insert(0, api_dir)
+        except Exception:
+            pass
+        try:
+            return __import__(module_name, fromlist=[''])
+        except Exception:
+            try:
+                spec = importlib.util.find_spec(module_name)
+                if spec and spec.loader:
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    return module
+            except Exception:
+                pass
+        return None
+    except BaseException:
+        return None
+
 # Wrap EVERYTHING in try-except to prevent any crash
 try:
-    # Import standard library first
     import logging
     import asyncio
+    import uuid
     from typing import Optional, Dict, Any
-    
+
     # Initialize logger with fallback
     logger = None
     try:
         logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s', force=True)
         logger = logging.getLogger(__name__)
         logger.setLevel(logging.INFO)
-    except Exception as log_err:
-        # Fallback logger using print
+    except Exception:
         class SimpleLogger:
             def info(self, msg): print(f"INFO: {msg}", file=sys.stderr, flush=True)
             def warning(self, msg): print(f"WARNING: {msg}", file=sys.stderr, flush=True)
             def error(self, msg): print(f"ERROR: {msg}", file=sys.stderr, flush=True)
             def setLevel(self, level): pass
         logger = SimpleLogger()
-        logger.error(f"Logging init failed: {log_err}")
 
     # Add api directory to path
     try:
@@ -65,7 +89,7 @@ try:
     BaseModel = None
     try:
         from pydantic import BaseModel
-    except ImportError:
+    except Exception:
         class BaseModel:
             def __init__(self, **kwargs):
                 for k, v in kwargs.items():
@@ -85,7 +109,7 @@ try:
         FALLBACK_MODE = True
         logger.error(f"FastAPI import failed: {e}")
 
-    # Import local modules - CRITICAL: wrap each import separately
+    # Import local modules - use safe import for each
     ProjectContext = None
     DevOpsFiles = None
     JobResponse = None
@@ -94,16 +118,23 @@ try:
     create_job = None
     get_job = None
     update_job_status = None
-    IMPORTS_OK = False
 
-    # Try importing models first
+    # Try importing models
     try:
-        from models import ProjectContext, DevOpsFiles, JobResponse, JobStatus
-        IMPORTS_OK = True
-        logger.info("Imported models successfully")
+        models_module = _safe_import('models')
+        if models_module:
+            ProjectContext = getattr(models_module, 'ProjectContext', None)
+            DevOpsFiles = getattr(models_module, 'DevOpsFiles', None)
+            JobResponse = getattr(models_module, 'JobResponse', None)
+            JobStatus = getattr(models_module, 'JobStatus', None)
+            if all([ProjectContext, DevOpsFiles, JobResponse, JobStatus]):
+                logger.info("Imported models successfully")
+            else:
+                raise AttributeError("Missing model classes")
+        else:
+            raise ImportError("Could not load models module")
     except Exception as e:
         logger.error(f"Failed to import models: {e}")
-        # Create fallback models
         class ProjectContext(BaseModel):
             stack: str = "unknown"
             files: Dict[str, str] = {}
@@ -119,20 +150,37 @@ try:
             status: str = "pending"
             result: Optional[DevOpsFiles] = None
             error: Optional[str] = None
-
-    # Try importing templates
+    
+    # Try importing templates - this is the risky one
     try:
-        from templates import get_template
-        logger.info("Imported templates successfully")
+        templates_module = _safe_import('templates')
+        if templates_module:
+            get_template = getattr(templates_module, 'get_template', None)
+            if get_template:
+                logger.info("Imported templates successfully")
+            else:
+                raise AttributeError("get_template not found")
+        else:
+            raise ImportError("Could not load templates module")
     except Exception as e:
         logger.error(f"Failed to import templates: {e}")
-        def get_template(stack):
+        logger.error(traceback.format_exc())
+    def get_template(stack):
             return None
 
     # Try importing job_queue
     try:
-        from job_queue import create_job, get_job, update_job_status
-        logger.info("Imported job_queue successfully")
+        job_queue_module = _safe_import('job_queue')
+        if job_queue_module:
+            create_job = getattr(job_queue_module, 'create_job', None)
+            get_job = getattr(job_queue_module, 'get_job', None)
+            update_job_status = getattr(job_queue_module, 'update_job_status', None)
+            if all([create_job, get_job, update_job_status]):
+                logger.info("Imported job_queue successfully")
+            else:
+                raise AttributeError("Missing job_queue functions")
+        else:
+            raise ImportError("Could not load job_queue module")
     except Exception as e:
         logger.error(f"Failed to import job_queue: {e}")
         def create_job(context):
@@ -148,10 +196,8 @@ try:
 
     if not FALLBACK_MODE and FastAPI:
         try:
-            # Create FastAPI app
             app = FastAPI(title="Spectra API", description="AI-powered DevOps file generator", version="0.2.0")
 
-            # CORS configuration
             def parse_cors_origins():
                 origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
                 if not origins_str:
@@ -187,7 +233,6 @@ try:
 
             app.add_middleware(CORSMiddleware, **cors_config)
 
-            # Gemini client function
             def get_gemini_client():
                 import google.genai as genai
                 key = os.getenv("OPENAI_API_KEY")
@@ -196,7 +241,6 @@ try:
                 genai.configure(api_key=key)
                 return genai.GenerativeModel('gemini-2.5-flash')
 
-            # LLM response function
             async def get_llm_response(context: ProjectContext, timeout: float = 120.0) -> DevOpsFiles:
                 try:
                     model = get_gemini_client()
@@ -221,7 +265,7 @@ Return ONLY valid JSON with keys: dockerfile, compose, github_action."""
                     except Exception as e:
                         logger.error(f"Gemini error: {e}")
                         raise
-
+                
                 try:
                     if hasattr(asyncio, 'to_thread'):
                         text = await asyncio.wait_for(asyncio.to_thread(_call_sync), timeout=timeout)
@@ -243,15 +287,14 @@ Return ONLY valid JSON with keys: dockerfile, compose, github_action."""
                 except Exception as e:
                     raise HTTPException(status_code=500, detail=f"AI error: {str(e)}")
 
-            # Routes
             @app.post("/")
             async def generate_devops(context: ProjectContext):
                 try:
-                    template = get_template(context.stack)
+                    template = get_template(context.stack) if get_template else None
                     if template:
-                        return template.dict()
+                        return template.dict() if hasattr(template, 'dict') else dict(template)
                     ctx_dict = context.dict() if hasattr(context, 'dict') else dict(context)
-                    job_id = create_job(ctx_dict)
+                    job_id = create_job(ctx_dict) if create_job else str(uuid.uuid4())
                     return {"job_id": job_id, "status": "pending"}
                 except Exception as e:
                     logger.error(f"generate_devops error: {e}")
@@ -260,41 +303,49 @@ Return ONLY valid JSON with keys: dockerfile, compose, github_action."""
             @app.post("/jobs")
             async def create_job_endpoint(context: ProjectContext):
                 try:
-                    template = get_template(context.stack)
+                    template = get_template(context.stack) if get_template else None
                     if template:
-                        return {"status": "completed", "result": template.dict()}
+                        return {"status": "completed", "result": template.dict() if hasattr(template, 'dict') else dict(template)}
                     ctx_dict = context.dict() if hasattr(context, 'dict') else dict(context)
-                    job_id = create_job(ctx_dict)
+                    job_id = create_job(ctx_dict) if create_job else str(uuid.uuid4())
                     return JobResponse(job_id=job_id, status="pending")
                 except Exception as e:
                     raise HTTPException(status_code=500, detail=str(e))
 
             @app.get("/job/{job_id}")
             async def get_job_status(job_id: str):
-                data = get_job(job_id)
+                data = get_job(job_id) if get_job else None
                 if not data:
                     raise HTTPException(status_code=404, detail="Job not found")
-                result = DevOpsFiles(**data["result"]) if data.get("result") else None
-                return JobStatus(job_id=job_id, status=data["status"], result=result, error=data.get("error"))
+                result = None
+                if data.get("result"):
+                    try:
+                        result = DevOpsFiles(**data["result"])
+                    except Exception:
+                        result = None
+                return JobStatus(job_id=job_id, status=data.get("status", "unknown"), result=result, error=data.get("error"))
 
             @app.post("/process/{job_id}")
             async def process_job(job_id: str):
-                data = get_job(job_id)
+                data = get_job(job_id) if get_job else None
                 if not data:
                     raise HTTPException(status_code=404, detail="Job not found")
-                if data["status"] != "pending":
-                    return {"message": f"Job {data['status']}"}
-                update_job_status(job_id, "processing")
+                if data.get("status") != "pending":
+                    return {"message": f"Job {data.get('status', 'unknown')}"}
+                if update_job_status:
+                    update_job_status(job_id, "processing")
                 try:
-                    ctx = ProjectContext(**data["context"])
+                    ctx = ProjectContext(**data.get("context", {}))
                     timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "120.0"))
                     result = await get_llm_response(ctx, timeout=timeout)
-                    update_job_status(job_id, "completed", result=result.dict())
+                    if update_job_status:
+                        update_job_status(job_id, "completed", result=result.dict() if hasattr(result, 'dict') else dict(result))
                     return {"message": "Job processed", "job_id": job_id}
                 except HTTPException:
                     raise
                 except Exception as e:
-                    update_job_status(job_id, "failed", error=str(e))
+                    if update_job_status:
+                        update_job_status(job_id, "failed", error=str(e))
                     raise HTTPException(status_code=500, detail=str(e))
 
             @app.get("/health")
@@ -305,7 +356,6 @@ Return ONLY valid JSON with keys: dockerfile, compose, github_action."""
             def root():
                 return {"service": "Spectra API", "version": "0.2.0", "endpoints": ["POST /", "POST /jobs", "GET /job/{id}", "POST /process/{id}", "GET /health"]}
 
-            # Try Mangum
             try:
                 from mangum import Mangum
                 mangum_handler = Mangum(app, lifespan="off")
@@ -316,7 +366,7 @@ Return ONLY valid JSON with keys: dockerfile, compose, github_action."""
         except Exception as e:
             logger.error(f"FastAPI app creation failed: {e}")
             logger.error(traceback.format_exc())
-            app = None
+    app = None
 
     # Fallback app creation
     if app is None:
@@ -341,7 +391,6 @@ Return ONLY valid JSON with keys: dockerfile, compose, github_action."""
             logger.error(f"Fallback app creation failed: {e}")
             app = _create_minimal_asgi_app()
 
-    # Handler function
     def handler(event=None, context=None):
         try:
             if not FALLBACK_MODE and _mangum_available and mangum_handler:
@@ -357,7 +406,6 @@ Return ONLY valid JSON with keys: dockerfile, compose, github_action."""
             return {"statusCode": 500, "headers": {"content-type": "application/json"}, "body": json.dumps({"error": "Error"})}
 
 except BaseException as e:
-    # Catch EVERYTHING including SystemExit, KeyboardInterrupt
     print(f"FATAL MODULE ERROR: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
     print(traceback.format_exc(), file=sys.stderr, flush=True)
     app = _create_minimal_asgi_app()
