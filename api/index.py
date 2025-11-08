@@ -14,8 +14,9 @@ try:
     logger = logging.getLogger(__name__)
 except Exception:
     # Fallback if logging setup fails
-    logging.basicConfig()
+    logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
 
 # Ensure api directory is in Python path for direct imports (Vercel compatibility)
 try:
@@ -415,7 +416,6 @@ Example format: {{"dockerfile": "FROM...", "compose": "version: '3.8'...", "gith
             except Exception as e:
                 logger.error(f"Unexpected error in API: {e}", exc_info=True)
                 raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
         @app.post("/jobs")
         async def create_job_endpoint(context: ProjectContext):
             """
@@ -430,8 +430,11 @@ Example format: {{"dockerfile": "FROM...", "compose": "version: '3.8'...", "gith
             # Check template first
             template = get_template(context.stack)
             if template:
-                # Return files directly, not a job
-                return template
+                # Return template as a "completed" job response
+                return {
+                    "status": "completed",
+                    "result": template.dict()
+                }
             
             # Create job
             try:
@@ -681,26 +684,8 @@ if app is None and not FALLBACK_MODE:
         app = FastAPI(title="Spectra API", version="0.2.0")
         logger.warning("Created minimal FastAPI app as fallback")
     except Exception as e:
-        logger.error(f"Failed to create minimal app: {e}")
+        # This prevents module import failures
+        # The handler function is always defined above at line 581
+        # No additional fallback is needed here
+        logger.error(f"Failed to create minimal FastAPI app: {e}")
         app = None
-
-# Final safety check: ensure handler function is always defined and callable
-# This prevents module import failures
-if not callable(handler):
-    def handler(event=None, context=None):
-        """Emergency fallback handler if main handler failed to initialize."""
-        try:
-            return {
-                "statusCode": 500,
-                "headers": {"content-type": "application/json"},
-                "body": json.dumps({
-                    "error": "Service initialization failed",
-                    "message": "The serverless function failed to initialize properly. Please check the logs."
-                })
-            }
-        except Exception:
-            # Last resort: return minimal response
-            return {
-                "statusCode": 500,
-                "body": '{"error":"Service unavailable"}'
-            }
