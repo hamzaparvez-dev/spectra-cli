@@ -7,16 +7,22 @@ import logging
 import asyncio
 from typing import Optional, Dict, Any
 
-# Configure logging FIRST - before any logger usage
-# Use try-except to ensure logging setup never fails
+# Safe logging initialization - use print as fallback
+_logger_initialized = False
 try:
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-except Exception:
-    # Fallback if logging setup fails
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
+    _logger_initialized = True
+except Exception as e:
+    # If logging fails completely, create a minimal logger that uses print
+    class PrintLogger:
+        def info(self, msg): print(f"INFO: {msg}", file=sys.stderr)
+        def warning(self, msg): print(f"WARNING: {msg}", file=sys.stderr)
+        def error(self, msg): print(f"ERROR: {msg}", file=sys.stderr)
+        def setLevel(self, level): pass
+    logger = PrintLogger()
+    logger.error(f"Logging initialization failed: {e}")
 
 # Ensure api directory is in Python path for direct imports (Vercel compatibility)
 try:
@@ -24,23 +30,18 @@ try:
     if api_dir and api_dir not in sys.path:
         sys.path.insert(0, api_dir)
 except (NameError, AttributeError):
-    # __file__ might not be available in some environments
-    # Try to add current working directory or api directory
     try:
         if 'api' not in str(sys.path):
-            # Try adding common paths
             for path in [os.getcwd(), '/var/task/api', '/var/task']:
                 if os.path.exists(path) and path not in sys.path:
                     sys.path.insert(0, path)
     except Exception:
-
         pass
 
 # Import BaseModel separately - needed even in fallback mode
 try:
     from pydantic import BaseModel
 except ImportError:
-    # If pydantic is not available, create a minimal BaseModel fallback
     class BaseModel:
         def __init__(self, **kwargs):
             for key, value in kwargs.items():
@@ -48,7 +49,7 @@ except ImportError:
         def dict(self):
             return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
 
-# Try to import FastAPI and dependencies. If it fails, provide a minimal handler.
+# Try to import FastAPI and dependencies
 FALLBACK_MODE = False
 try:
     from fastapi import FastAPI, HTTPException
@@ -58,8 +59,16 @@ except Exception as e:
     logger.error(f"FastAPI import failed: {e}")
 
 # Direct imports - all files are in the same directory in Vercel serverless
-# Wrap in try-except to handle import errors gracefully
 IMPORTS_OK = False
+ProjectContext = None
+DevOpsFiles = None
+JobResponse = None
+JobStatus = None
+get_template = None
+create_job = None
+get_job = None
+update_job_status = None
+
 try:
     from models import ProjectContext, DevOpsFiles, JobResponse, JobStatus
     from templates import get_template
@@ -68,117 +77,97 @@ try:
     logger.info("Successfully imported all required modules")
 except ImportError as e:
     IMPORTS_OK = False
-    logger.error(f"Failed to import modules: {e}", exc_info=True)
-    # Log the import path for debugging
-    logger.error(f"Current sys.path: {sys.path}")
-    logger.error(f"Current working directory: {os.getcwd()}")
-    logger.error(f"__file__: {__file__ if '__file__' in globals() else 'N/A'}")
-except Exception as e:
-    # Catch any other exceptions during import to prevent module load failure
-    IMPORTS_OK = False
-    logger.error(f"Unexpected error importing modules: {e}", exc_info=True)
-    # Define minimal fallbacks to prevent complete failure
-    # These inherit from BaseModel to work with FastAPI response_model
+    logger.error(f"Failed to import modules: {e}")
+    # Define minimal fallbacks
     class ProjectContext(BaseModel):
         stack: str = "unknown"
         files: Dict[str, str] = {}
-    
     class DevOpsFiles(BaseModel):
         dockerfile: Optional[str] = None
         compose: Optional[str] = None
         github_action: Optional[str] = None
-    
     class JobResponse(BaseModel):
         job_id: str = ""
         status: str = "pending"
-    
     class JobStatus(BaseModel):
         job_id: str = ""
         status: str = "pending"
         result: Optional[DevOpsFiles] = None
         error: Optional[str] = None
-    
     def get_template(stack):
-        logger.error(f"get_template called in fallback mode (stack: {stack}) - imports failed")
-        raise ImportError(f"get_template unavailable: required modules not imported (stack: {stack})")
-    
+        raise ImportError(f"get_template unavailable: required modules not imported")
     def create_job(context):
-        stack = context.get('stack', 'unknown') if isinstance(context, dict) else getattr(context, 'stack', 'unknown')
-        logger.error(f"create_job called in fallback mode (stack: {stack}) - imports failed")
-        raise ImportError(f"create_job unavailable: required modules not imported (stack: {stack})")
-    
+        raise ImportError(f"create_job unavailable: required modules not imported")
     def get_job(job_id):
-        logger.error(f"get_job called in fallback mode (job_id: {job_id}) - imports failed")
-        raise ImportError(f"get_job unavailable: required modules not imported (job_id: {job_id})")
-    
+        raise ImportError(f"get_job unavailable: required modules not imported")
     def update_job_status(job_id, status, result=None, error=None):
-        logger.error(f"update_job_status called in fallback mode (job_id: {job_id}, status: {status}) - imports failed")
-        raise ImportError(f"update_job_status unavailable: required modules not imported (job_id: {job_id}, status: {status})")
+        raise ImportError(f"update_job_status unavailable: required modules not imported")
+except Exception as e:
+    IMPORTS_OK = False
+    logger.error(f"Unexpected error importing modules: {e}")
+    # Same fallbacks as above
+    class ProjectContext(BaseModel):
+        stack: str = "unknown"
+        files: Dict[str, str] = {}
+    class DevOpsFiles(BaseModel):
+        dockerfile: Optional[str] = None
+        compose: Optional[str] = None
+        github_action: Optional[str] = None
+    class JobResponse(BaseModel):
+        job_id: str = ""
+        status: str = "pending"
+    class JobStatus(BaseModel):
+        job_id: str = ""
+        status: str = "pending"
+        result: Optional[DevOpsFiles] = None
+        error: Optional[str] = None
+    def get_template(stack):
+        raise ImportError(f"get_template unavailable")
+    def create_job(context):
+        raise ImportError(f"create_job unavailable")
+    def get_job(job_id):
+        raise ImportError(f"get_job unavailable")
+    def update_job_status(job_id, status, result=None, error=None):
+        raise ImportError(f"update_job_status unavailable")
 
-# Initialize app variable and handler variables to None first to ensure they're always defined
+# Initialize app variable - CRITICAL: must never be None
 app = None
 _mangum_available = False
 mangum_handler = None
 
-# Only initialize FastAPI app if not in fallback mode
-# Wrap in try-except to prevent module load failures
+# Initialize FastAPI app - wrap everything in try-except to prevent crashes
 try:
     if not FALLBACK_MODE:
         # Initialize Gemini client (defer heavy import until needed)
         def get_gemini_client():
             """Get or configure Gemini client with API key validation."""
-            # Import inside function to avoid module-level import failure
             import google.genai as genai
-            api_key = os.getenv("OPENAI_API_KEY")  # Keep variable name as requested
+            api_key = os.getenv("OPENAI_API_KEY")
             if not api_key:
                 raise ValueError("OPENAI_API_KEY environment variable is not set")
             genai.configure(api_key=api_key)
-            # Use gemini-2.5-flash for faster, cheaper responses
             return genai.GenerativeModel('gemini-2.5-flash')
 
         def parse_and_validate_cors_origins():
-            """
-            Parse and validate CORS allowed origins from environment variable.
-            
-            Reads CORS_ALLOWED_ORIGINS environment variable (comma-separated list).
-            Validates that origins are properly formatted URLs.
-            
-            Returns:
-                Tuple of (regular_origins, regex_origins) where:
-                - regular_origins: List of validated origin URLs
-                - regex_origins: List of regex patterns for allow_origin_regex
-            """
+            """Parse and validate CORS allowed origins from environment variable."""
             origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
             if not origins_str:
                 return [], []
-            
             regular_origins = []
             regex_origins = []
-            
             for origin in origins_str.split(","):
                 origin = origin.strip()
                 if not origin:
                     continue
-                
-                # Basic validation: must be a valid URL format
-                # Allow http://, https://, or specific patterns
                 if origin == "*":
-                    logger.warning("CORS origin '*' detected in CORS_ALLOWED_ORIGINS. This will be ignored if allow_credentials=True.")
+                    logger.warning("CORS origin '*' detected. This will be ignored if allow_credentials=True.")
                     regular_origins.append(origin)
                 elif origin.startswith(("http://", "https://")):
-                    # Normalize: remove trailing slashes
-                    origin = origin.rstrip("/")
-                    regular_origins.append(origin)
+                    regular_origins.append(origin.rstrip("/"))
                 elif origin.startswith("regex:"):
-                    # Support regex patterns (will use allow_origin_regex)
-                    regex_pattern = origin[6:].strip()  # Remove "regex:" prefix
+                    regex_pattern = origin[6:].strip()
                     if regex_pattern:
                         regex_origins.append(regex_pattern)
-                    else:
-                        logger.warning(f"Empty regex pattern after 'regex:' prefix. Skipping.")
-                else:
-                    logger.warning(f"Invalid CORS origin format: {origin}. Skipping.")
-            
             return regular_origins, regex_origins
 
         app = FastAPI(
@@ -187,78 +176,45 @@ try:
             version="0.2.0"
         )
 
-        # Parse and validate CORS origins from environment
+        # Parse and validate CORS origins
         regular_origins, regex_origins = parse_and_validate_cors_origins()
         cors_allow_credentials = os.getenv("CORS_ALLOW_CREDENTIALS", "true").lower() == "true"
-        
-        # Security check: cannot use allow_origins=["*"] with allow_credentials=True
         has_wildcard = "*" in regular_origins
         has_any_origins = len(regular_origins) > 0 or len(regex_origins) > 0
         
         if cors_allow_credentials:
             if not has_any_origins or has_wildcard:
-                logger.warning(
-                    "CORS_ALLOWED_ORIGINS not configured or contains '*', but CORS_ALLOW_CREDENTIALS=True. "
-                    "This is rejected by browsers. Setting allow_credentials=False for security."
-                )
+                logger.warning("CORS_ALLOWED_ORIGINS not configured or contains '*', but CORS_ALLOW_CREDENTIALS=True. Setting allow_credentials=False.")
                 cors_allow_credentials = False
         
-        # If no origins configured and credentials disabled, allow all (public API)
         if not has_any_origins and not cors_allow_credentials:
             regular_origins = ["*"]
-            logger.info("No CORS origins configured. Using allow_origins=['*'] with allow_credentials=False (public API).")
+            logger.info("No CORS origins configured. Using allow_origins=['*'] with allow_credentials=False.")
         elif not has_any_origins:
-            # If credentials are needed but no origins, default to empty (most restrictive)
             logger.warning("CORS_ALLOWED_ORIGINS not configured but credentials enabled. No origins will be allowed.")
             regular_origins = []
         
-        # Build CORS middleware configuration
         cors_config = {
             "allow_credentials": cors_allow_credentials,
             "allow_methods": ["*"],
             "allow_headers": ["*"],
         }
-        
         if regular_origins:
             cors_config["allow_origins"] = regular_origins
         if regex_origins:
             cors_config["allow_origin_regex"] = "|".join(f"({pattern})" for pattern in regex_origins)
         
-        logger.info(f"CORS configuration: allow_origins={regular_origins}, allow_credentials={cors_allow_credentials}, "
-                    f"allow_origin_regex={'configured' if regex_origins else 'none'}")
-        
-        # Add CORS middleware
-        app.add_middleware(
-            CORSMiddleware,
-            **cors_config
-        )
+        app.add_middleware(CORSMiddleware, **cors_config)
 
-        # Normal mode - define get_llm_response and all routes
+        # Define get_llm_response function
         async def get_llm_response(context: ProjectContext, timeout: float = 120.0) -> DevOpsFiles:
-            """
-            Calls the Gemini API to generate the DevOps files asynchronously with timeout handling.
-            
-            Args:
-                context: Project context containing stack and files
-                timeout: Maximum time to wait for LLM response in seconds (default: 120)
-                
-            Returns:
-                DevOpsFiles object with generated content
-                
-            Raises:
-                HTTPException: If API key is missing or Gemini call fails
-                asyncio.TimeoutError: If the LLM call exceeds the timeout
-            """
+            """Calls the Gemini API to generate the DevOps files asynchronously with timeout handling."""
             try:
                 model = get_gemini_client()
             except ValueError:
                 logger.error("OPENAI_API_KEY is not set!")
-                raise HTTPException(
-                    status_code=500,
-                    detail="API key is not configured on the server."
-                )
+                raise HTTPException(status_code=500, detail="API key is not configured on the server.")
 
-            # Convert file context to a more readable string for the prompt
             file_context_str = "\n".join([
                 f"--- File: {filename} ---\n{content}\n"
                 for filename, content in context.files.items()
@@ -286,14 +242,12 @@ Instructions:
 Return ONLY the valid JSON object with these exact keys: dockerfile, compose, github_action.
 Example format: {{"dockerfile": "FROM...", "compose": "version: '3.8'...", "github_action": "name: CI/CD..."}}"""
             
-            # Combine system and user prompts for Gemini
             full_prompt = f"{system_prompt}\n\n{user_prompt}"
             
             def _call_gemini_sync():
                 """Synchronous wrapper for Gemini API call to run in thread pool."""
                 try:
                     logger.info(f"Calling Gemini API for stack: {context.stack}")
-                    # Use gemini-2.5-flash optimized config for faster responses
                     response = model.generate_content(
                         full_prompt,
                         generation_config={
@@ -311,17 +265,13 @@ Example format: {{"dockerfile": "FROM...", "compose": "version: '3.8'...", "gith
                     raise
             
             try:
-                # Run the blocking Gemini API call in a thread pool with timeout
-                # Use asyncio.to_thread for Python 3.9+, fallback to run_in_executor for Python 3.8
                 logger.info(f"Starting async LLM call for stack: {context.stack} with timeout: {timeout}s")
                 if hasattr(asyncio, 'to_thread'):
-                    # Python 3.9+
                     response_json_str = await asyncio.wait_for(
                         asyncio.to_thread(_call_gemini_sync),
                         timeout=timeout
                     )
                 else:
-                    # Python 3.8 compatibility
                     loop = asyncio.get_event_loop()
                     response_json_str = await asyncio.wait_for(
                         loop.run_in_executor(None, _call_gemini_sync),
@@ -329,63 +279,34 @@ Example format: {{"dockerfile": "FROM...", "compose": "version: '3.8'...", "gith
                     )
                 logger.info("AI Response received successfully")
                 
-                # Clean up response if it has markdown code blocks
                 if response_json_str.startswith("```json"):
                     response_json_str = response_json_str.replace("```json", "").replace("```", "").strip()
                 elif response_json_str.startswith("```"):
                     response_json_str = response_json_str.replace("```", "").strip()
                 
-                # Parse the JSON string from the LLM
                 data = json.loads(response_json_str)
-                
                 return DevOpsFiles(
                     dockerfile=data.get('dockerfile'),
                     compose=data.get('compose'),
                     github_action=data.get('github_action')
                 )
-                
             except asyncio.TimeoutError:
-                logger.error(f"LLM call timed out after {timeout} seconds for stack: {context.stack}")
-                raise HTTPException(
-                    status_code=504,
-                    detail=f"LLM request timed out after {timeout} seconds. Please try again or contact support."
-                )
+                logger.error(f"LLM call timed out after {timeout} seconds")
+                raise HTTPException(status_code=504, detail=f"LLM request timed out after {timeout} seconds.")
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse JSON response from Gemini: {e}")
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to parse AI response: {e}"
-                )
+                raise HTTPException(status_code=500, detail=f"Failed to parse AI response: {e}")
             except Exception as e:
                 logger.error(f"Error calling Gemini or parsing response: {e}")
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"AI model error: {str(e)}"
-                )
+                raise HTTPException(status_code=500, detail=f"AI model error: {str(e)}")
 
-        # All route definitions
+        # Route definitions
         @app.post("/")
         async def generate_devops(context: ProjectContext):
-            """
-            Main API endpoint. Receives project context and returns DevOps files.
-            
-            Flow:
-            1. Check if template exists for the stack -> return files immediately
-            2. If no template, create a job and return job_id (for async processing)
-            
-            Args:
-                context: Project context containing stack and files
-                
-            Returns:
-                Dict with either:
-                - {"dockerfile": "...", "compose": "...", "github_action": "..."} if template exists
-                - {"job_id": "...", "status": "pending"} if job created
-            """
+            """Main API endpoint. Receives project context and returns DevOps files."""
             logger.info("API request received")
             try:
                 logger.info(f"Processing project with stack: {context.stack}")
-                
-                # Priority 1: Check template cache first (instant response for 80% of users)
                 try:
                     template = get_template(context.stack)
                     if template:
@@ -394,26 +315,15 @@ Example format: {{"dockerfile": "FROM...", "compose": "version: '3.8'...", "gith
                 except Exception as template_error:
                     logger.warning(f"Error checking template cache: {template_error}. Continuing with job creation.")
                 
-                # Priority 2: Create async job for custom stacks
                 logger.info(f"No template found for stack: {context.stack}, creating async job")
                 try:
                     context_dict = context.dict() if hasattr(context, 'dict') else dict(context)
                     job_id = create_job(context_dict)
-                    
-                    # Return job_id for polling
-                    return {
-                        "job_id": job_id,
-                        "status": "pending"
-                    }
+                    return {"job_id": job_id, "status": "pending"}
                 except Exception as job_error:
                     logger.error(f"Failed to create job: {job_error}", exc_info=True)
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Failed to create processing job: {str(job_error)}"
-                    )
-                
+                    raise HTTPException(status_code=500, detail=f"Failed to create processing job: {str(job_error)}")
             except HTTPException:
-                # Re-raise HTTPExceptions as-is
                 raise
             except ValueError as e:
                 logger.error(f"Validation error: {e}")
@@ -421,57 +331,30 @@ Example format: {{"dockerfile": "FROM...", "compose": "version: '3.8'...", "gith
             except Exception as e:
                 logger.error(f"Unexpected error in API: {e}", exc_info=True)
                 raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
         @app.post("/jobs")
         async def create_job_endpoint(context: ProjectContext):
-            """
-            Explicitly create a job (alternative endpoint for job-based flow).
-            
-            Args:
-                context: Project context containing stack and files
-                
-            Returns:
-                JobResponse with job_id
-            """
-            # Check template first
+            """Explicitly create a job (alternative endpoint for job-based flow)."""
             template = get_template(context.stack)
             if template:
-                # Return template as a "completed" job response
-                return {
-                    "status": "completed",
-                    "result": template.dict()
-                }
-            
-            # Create job
+                return {"status": "completed", "result": template.dict()}
             try:
                 context_dict = context.dict() if hasattr(context, 'dict') else dict(context)
                 job_id = create_job(context_dict)
                 return JobResponse(job_id=job_id, status="pending")
             except Exception as e:
                 logger.error(f"Failed to create job: {e}", exc_info=True)
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to create job: {str(e)}"
-                )
+                raise HTTPException(status_code=500, detail=f"Failed to create job: {str(e)}")
 
         @app.get("/job/{job_id}")
         async def get_job_status(job_id: str):
-            """
-            Get the status of a job.
-            
-            Args:
-                job_id: Job ID
-                
-            Returns:
-                JobStatus with current status and result if completed
-            """
+            """Get the status of a job."""
             job_data = get_job(job_id)
             if not job_data:
                 raise HTTPException(status_code=404, detail="Job not found")
-            
             result = None
             if job_data.get("result"):
                 result = DevOpsFiles(**job_data["result"])
-            
             return JobStatus(
                 job_id=job_id,
                 status=job_data["status"],
@@ -481,67 +364,33 @@ Example format: {{"dockerfile": "FROM...", "compose": "version: '3.8'...", "gith
 
         @app.post("/process/{job_id}")
         async def process_job(job_id: str):
-            """
-            Background job processor endpoint. 
-            This can be called by Vercel cron jobs or manually.
-            
-            Args:
-                job_id: Job ID to process
-                
-            Returns:
-                Success message
-            """
+            """Background job processor endpoint."""
             job_data = get_job(job_id)
             if not job_data:
                 raise HTTPException(status_code=404, detail="Job not found")
-            
             if job_data["status"] != "pending":
                 return {"message": f"Job already processed. Status: {job_data['status']}"}
-            
-            # Update status to processing
             update_job_status(job_id, "processing")
-            
             try:
-                # Get context from job
                 context_dict = job_data["context"]
                 context = ProjectContext(**context_dict)
-                
-                # Call LLM asynchronously with timeout (120 seconds default, but can be adjusted)
-                # This prevents blocking the request and exceeding platform timeouts
                 llm_timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "120.0"))
                 result = await get_llm_response(context, timeout=llm_timeout)
-                
-                # Store result
-                update_job_status(
-                    job_id,
-                    "completed",
-                    result=result.dict()
-                )
-                
+                update_job_status(job_id, "completed", result=result.dict())
                 logger.info(f"Successfully processed job {job_id}")
                 return {"message": "Job processed successfully", "job_id": job_id}
-                
             except HTTPException:
-                # Re-raise HTTPExceptions (including timeout errors) to preserve status codes
                 raise
             except Exception as e:
                 logger.error(f"Error processing job {job_id}: {e}", exc_info=True)
                 error_message = str(e)
-                update_job_status(
-                    job_id,
-                    "failed",
-                    error=error_message
-                )
+                update_job_status(job_id, "failed", error=error_message)
                 raise HTTPException(status_code=500, detail=f"Job processing failed: {error_message}")
 
         @app.get("/health")
         def health_check():
             """Simple health check endpoint."""
-            return {
-                "status": "ok",
-                "service": "spectra-api",
-                "version": "0.2.0"
-            }
+            return {"status": "ok", "service": "spectra-api", "version": "0.2.0"}
 
         @app.get("/")
         def root():
@@ -558,8 +407,7 @@ Example format: {{"dockerfile": "FROM...", "compose": "version: '3.8'...", "gith
                 }
             }
 
-        # Export handler for Vercel
-        # Vercel Python runtime supports ASGI apps directly, but we also support Mangum for AWS Lambda compatibility
+        # Try to initialize Mangum handler
         try:
             from mangum import Mangum
             mangum_handler = Mangum(app, lifespan="off")
@@ -569,208 +417,91 @@ Example format: {{"dockerfile": "FROM...", "compose": "version: '3.8'...", "gith
             logger.warning(f"Mangum not available: {e}. Vercel will use ASGI app directly.")
             _mangum_available = False
             mangum_handler = None
+
 except Exception as e:
-    # If anything fails during FastAPI initialization, log it but don't crash
     logger.error(f"Error initializing FastAPI app: {e}", exc_info=True)
     app = None
     _mangum_available = False
     mangum_handler = None
 
 if FALLBACK_MODE:
-    # In fallback mode, Mangum is not available
     _mangum_available = False
     mangum_handler = None
 
-# For Vercel Python runtime, we can export the app directly as ASGI
-# But we also provide a handler function for compatibility
-# Vercel will use the app directly if available, otherwise fall back to handler
-
-# Handler function for Vercel (used when ASGI app is not directly supported)
-def handler(event=None, context=None):
-    """
-    Vercel serverless function handler.
-    
-    Handles both AWS Lambda format (event, context) and Vercel format.
-    Vercel passes event as a dict with request information.
-    """
-    try:
-        # Normal mode - use Mangum if available (preferred for FastAPI)
-        if not FALLBACK_MODE and _mangum_available and mangum_handler:
-            try:
-                # Mangum expects AWS Lambda format, but Vercel uses a different format
-                # Convert Vercel event to Lambda format if needed
-                result = mangum_handler(event, context)
-                # Ensure proper response format for Vercel
-                if isinstance(result, dict) and "statusCode" in result:
-                    return result
-                # If Mangum returns a different format, wrap it
-                return {
-                    "statusCode": 200,
-                    "headers": {"content-type": "application/json"},
-                    "body": json.dumps(result) if not isinstance(result, str) else result
-                }
-            except Exception as e:
-                logger.error(f"Mangum handler error: {e}", exc_info=True)
-                # Fall through to fallback handler
-                pass
-        
-        # Fallback handler when Mangum is not available or failed
-        if FALLBACK_MODE:
-            # Minimal fallback handler when FastAPI is not available
-            path = (event or {}).get('rawPath') or (event or {}).get('path') or (event or {}).get('url', {}).get('path', '/')
-            if path in ('/', '/health'):
-                body = json.dumps({
-                    "status": "ok",
-                    "service": "spectra-api",
-                    "version": "0.2.0"
-                }) if path == '/health' else json.dumps({"service": "Spectra API", "version": "0.2.0"})
-                return {
-                    "statusCode": 200,
-                    "headers": {"content-type": "application/json"},
-                    "body": body
-                }
-            return {
-                "statusCode": 503,
-                "headers": {"content-type": "application/json"},
-                "body": json.dumps({"error": "Service initializing - FastAPI not available"})
-            }
-        
-        # Fallback when FastAPI is available but Mangum failed
-        # This should not happen in normal operation, but handle gracefully
-        path = (event or {}).get('rawPath') or (event or {}).get('path') or (event or {}).get('url', {}).get('path', '/')
-        method = (event or {}).get('requestContext', {}).get('http', {}).get('method') or (event or {}).get('httpMethod') or (event or {}).get('method', 'GET')
-        
-        if method == 'GET' and path in ('/health', '/'):
-            body = json.dumps({
-                "status": "ok",
-                "service": "spectra-api",
-                "version": "0.2.0"
-            }) if path == '/health' else json.dumps({
-                "service": "Spectra API",
-                "version": "0.2.0",
-                "endpoints": {
-                    "POST /": "Generate DevOps files (checks templates, creates job if needed)",
-                    "POST /jobs": "Create a job explicitly",
-                    "GET /job/{job_id}": "Get job status",
-                    "POST /process/{job_id}": "Process a job (background worker)",
-                    "GET /health": "Health check"
-                }
-            })
-            return {
-                "statusCode": 200,
-                "headers": {"content-type": "application/json"},
-                "body": body
-            }
-        
-        return {
-            "statusCode": 503,
-            "headers": {"content-type": "application/json"},
-            "body": json.dumps({"error": "Service initializing - Mangum handler unavailable"})
-        }
-        
-    except Exception as ex:
-        logger.error(f"Fatal error in handler: {ex}", exc_info=True)
-        return {
-            "statusCode": 500,
-            "headers": {"content-type": "application/json"},
-            "body": json.dumps({
-                "error": "Internal server error",
-                "message": str(ex) if os.getenv("DEBUG", "false").lower() == "true" else "An error occurred"
-            })
-        }
-
-# CRITICAL: Ensure app is ALWAYS a valid FastAPI instance for Vercel
+# CRITICAL: Ensure app is ALWAYS a valid FastAPI/ASGI instance for Vercel
 # Vercel Python runtime requires the 'app' variable to be a valid ASGI application
-# If app is None, Vercel will return a 500 error
 if app is None:
-    # Create a minimal FastAPI app as a last resort
-    # This ensures Vercel always has a valid app to work with
     try:
         if not FALLBACK_MODE:
-            # Try to import FastAPI again
             from fastapi import FastAPI
             app = FastAPI(title="Spectra API", version="0.2.0")
-            logger.warning("Created minimal FastAPI app as fallback - some features may be unavailable")
-            
-            # Add a basic health endpoint
+            logger.warning("Created minimal FastAPI app as fallback")
             @app.get("/health")
             def health_check():
                 return {"status": "ok", "service": "spectra-api", "version": "0.2.0", "mode": "minimal"}
-            
             @app.get("/")
             def root():
-                return {
-                    "service": "Spectra API",
-                    "version": "0.2.0",
-                    "status": "minimal_mode",
-                    "error": "Full API initialization failed. Check logs for details."
-                }
+                return {"service": "Spectra API", "version": "0.2.0", "status": "minimal_mode", "error": "Full API initialization failed"}
         else:
-            # Even in fallback mode, try to create a minimal app
-            # This is better than None for Vercel
             try:
                 from fastapi import FastAPI
                 app = FastAPI(title="Spectra API", version="0.2.0")
                 logger.warning("Created minimal FastAPI app in fallback mode")
-                
                 @app.get("/health")
                 def health_check():
                     return {"status": "ok", "service": "spectra-api", "version": "0.2.0", "mode": "fallback"}
-                
                 @app.get("/")
                 def root():
-                    return {
-                        "service": "Spectra API",
-                        "version": "0.2.0",
-                        "status": "fallback_mode",
-                        "error": "FastAPI dependencies not available"
-                    }
-            except Exception as inner_e:
-                logger.error(f"Failed to create minimal FastAPI app even in fallback: {inner_e}")
-                # Last resort: create a mock app object that at least has the ASGI interface
-                # This prevents Vercel from crashing with app=None
+                    return {"service": "Spectra API", "version": "0.2.0", "status": "fallback_mode"}
+            except Exception:
+                # Last resort: create minimal ASGI app
                 class MinimalASGIApp:
                     def __init__(self):
                         self.title = "Spectra API"
                         self.version = "0.2.0"
                     async def __call__(self, scope, receive, send):
                         if scope["type"] == "http":
-                            response_body = json.dumps({
-                                "error": "Service unavailable",
-                                "message": "FastAPI initialization failed"
-                            }).encode()
-                            await send({
-                                "type": "http.response.start",
-                                "status": 503,
-                                "headers": [[b"content-type", b"application/json"]],
-                            })
-                            await send({
-                                "type": "http.response.body",
-                                "body": response_body,
-                            })
+                            response_body = json.dumps({"error": "Service unavailable", "message": "FastAPI initialization failed"}).encode()
+                            await send({"type": "http.response.start", "status": 503, "headers": [[b"content-type", b"application/json"]]})
+                            await send({"type": "http.response.body", "body": response_body})
                 app = MinimalASGIApp()
                 logger.error("Created minimal ASGI app wrapper as absolute last resort")
     except Exception as e:
         logger.error(f"CRITICAL: Failed to create any FastAPI app: {e}", exc_info=True)
-        # Create a minimal ASGI-compatible object to prevent Vercel crash
+        # Absolute last resort: minimal ASGI app
         class MinimalASGIApp:
             def __init__(self):
                 self.title = "Spectra API"
                 self.version = "0.2.0"
             async def __call__(self, scope, receive, send):
                 if scope["type"] == "http":
-                    response_body = json.dumps({
-                        "error": "Service unavailable",
-                        "message": "Critical initialization failure"
-                    }).encode()
-                    await send({
-                        "type": "http.response.start",
-                        "status": 503,
-                        "headers": [[b"content-type", b"application/json"]],
-                    })
-                    await send({
-                        "type": "http.response.body",
-                        "body": response_body,
-                    })
+                    response_body = json.dumps({"error": "Service unavailable", "message": "Critical initialization failure"}).encode()
+                    await send({"type": "http.response.start", "status": 503, "headers": [[b"content-type", b"application/json"]]})
+                    await send({"type": "http.response.body", "body": response_body})
         app = MinimalASGIApp()
         logger.error("Created minimal ASGI app wrapper as absolute last resort")
+
+# Handler function for Vercel (compatibility layer)
+def handler(event=None, context=None):
+    """Vercel serverless function handler."""
+    try:
+        if not FALLBACK_MODE and _mangum_available and mangum_handler:
+            try:
+                result = mangum_handler(event, context)
+                if isinstance(result, dict) and "statusCode" in result:
+                    return result
+                return {"statusCode": 200, "headers": {"content-type": "application/json"}, "body": json.dumps(result) if not isinstance(result, str) else result}
+            except Exception as e:
+                logger.error(f"Mangum handler error: {e}", exc_info=True)
+        
+        if FALLBACK_MODE:
+            path = (event or {}).get('rawPath') or (event or {}).get('path') or (event or {}).get('url', {}).get('path', '/')
+            if path in ('/', '/health'):
+                body = json.dumps({"status": "ok", "service": "spectra-api", "version": "0.2.0"}) if path == '/health' else json.dumps({"service": "Spectra API", "version": "0.2.0"})
+                return {"statusCode": 200, "headers": {"content-type": "application/json"}, "body": body}
+            return {"statusCode": 503, "headers": {"content-type": "application/json"}, "body": json.dumps({"error": "Service initializing - FastAPI not available"})}
+        
+        return {"statusCode": 503, "headers": {"content-type": "application/json"}, "body": json.dumps({"error": "Service initializing - Mangum handler unavailable"})}
+    except Exception as ex:
+        logger.error(f"Fatal error in handler: {ex}", exc_info=True)
+        return {"statusCode": 500, "headers": {"content-type": "application/json"}, "body": json.dumps({"error": "Internal server error", "message": str(ex) if os.getenv("DEBUG", "false").lower() == "true" else "An error occurred"})}
