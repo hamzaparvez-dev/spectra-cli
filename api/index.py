@@ -239,7 +239,7 @@ try:
                 if not key:
                     raise ValueError("OPENAI_API_KEY not set")
                 genai.configure(api_key=key)
-                return genai.GenerativeModel('gemini-2.5-flash')
+                return genai.GenerativeModel('gemini-1.5-flash')
 
             async def get_llm_response(context: ProjectContext, timeout: float = 120.0) -> DevOpsFiles:
                 try:
