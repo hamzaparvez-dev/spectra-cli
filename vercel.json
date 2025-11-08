@@ -3,16 +3,18 @@
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "api/index.py"
+      "dest": "index.py"
     }
   ],
   "env": {
     "PYTHON_VERSION": "3.11"
   },
   "functions": {
-    "api/index.py": {
+    "index.py": {
       "maxDuration": 300,
-      "includeFiles": "api/**"
+      "includeFiles": [
+        "**/*.py"
+      ]
     }
   }
 }
