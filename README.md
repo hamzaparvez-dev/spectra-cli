@@ -10,9 +10,11 @@ Spectra CLI scans your project, identifies the tech stack, and automatically gen
 ## Features
 
 - 🔍 **Smart Project Scanning** - Automatically detects your tech stack (Node.js, Python, Java, Go, Rust, PHP, etc.)
-- 🤖 **AI-Powered Generation** - Uses GPT-4 to generate production-ready DevOps files
-- ⚡ **Fast & Simple** - One command to generate everything you need
+- 🤖 **AI-Powered Generation** - Uses Gemini AI to generate production-ready DevOps files
+- ⚡ **Lightning Fast** - Instant responses for common stacks via template caching (80% of users)
+- 🔄 **Async Processing** - Background job queue for custom stacks with real-time progress
 - 🔒 **Production-Ready** - Follows best practices for security and performance
+- 🚀 **Zero Configuration** - Works out of the box with sensible defaults
 
 ## Installation
 
@@ -79,14 +81,30 @@ pip install spectra-cli
    - Detect your tech stack
    - Generate Dockerfile, docker-compose.yml, and CI/CD workflows
 
+## Performance
+
+**System Design v2** includes major performance improvements:
+
+- **Template Caching**: Common stacks (Python, Node.js, Go, Rust, Java) get instant responses (<1 second)
+- **Async Job Queue**: Custom stacks use background processing with real-time polling
+- **No Timeouts**: Architecture solves Vercel timeout issues completely
+
+See [API_V2_DOCS.md](API_V2_DOCS.md) for detailed architecture documentation.
+
 ## Configuration
 
 ### Environment Variables
 
-- `SPECTRA_API_URL` - API endpoint URL (default: `http://127.0.0.1:8000/`)
+**CLI:**
+- `SPECTRA_API_URL` - API endpoint URL (default: `https://spectra-cli.vercel.app/`)
   ```bash
   export SPECTRA_API_URL='https://your-api.vercel.app/'
   ```
+
+**API Server (Vercel):**
+- `OPENAI_API_KEY` - Gemini API key (kept as `OPENAI_API_KEY` for compatibility)
+- `UPSTASH_REDIS_URL` - Upstash Redis URL (optional, for production job queue)
+- `UPSTASH_REDIS_TOKEN` - Upstash Redis token (optional)
 
 ### Command Options
 
@@ -192,8 +210,9 @@ spectra-cli/
 ## Requirements
 
 - Python 3.8 or higher
-- OpenAI API key (for the API server)
+- Gemini API key (for the API server) - Set as `OPENAI_API_KEY` environment variable
 - Internet connection (to call the API)
+- Upstash Redis (optional, for production job queue)
 
 ## Troubleshooting
 
@@ -209,11 +228,12 @@ spectra-cli/
 - Check that the API is responding correctly
 - Review API logs for errors
 
-### OpenAI API errors
+### API errors
 
-- Verify `OPENAI_API_KEY` is set correctly on the server
-- Check your OpenAI account has sufficient credits
-- Ensure you're using a valid API key
+- Verify `OPENAI_API_KEY` is set correctly on the server (should be your Gemini API key)
+- Check your Gemini API account has sufficient quota
+- For job queue issues, verify `UPSTASH_REDIS_URL` and `UPSTASH_REDIS_TOKEN` are set (optional)
+- See [API_V2_DOCS.md](API_V2_DOCS.md) for troubleshooting
 
 ## Contributing
 

@@ -93,7 +93,7 @@ def init(
         
     spinner = Spinner(
         "dots",
-        text=" :brain: Asking the AI brain to generate DevOps files (this may take a minute)..."
+        text=" :brain: Asking the AI brain to generate DevOps files..."
     )
     generated_files = None
     
