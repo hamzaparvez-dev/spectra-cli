@@ -233,17 +233,17 @@ try:
 
             app.add_middleware(CORSMiddleware, **cors_config)
 
-            def get_gemini_client():
-                import google.genai as genai
-                key = os.getenv("OPENAI_API_KEY")
+            def get_openrouter_key():
+                """Get OpenRouter API key from environment."""
+                key = os.getenv("OPENROUTER_API_KEY")
                 if not key:
-                    raise ValueError("OPENAI_API_KEY not set")
-                genai.configure(api_key=key)
-                return genai.GenerativeModel('gemini-1.5-flash')
+                    raise ValueError("OPENROUTER_API_KEY not set")
+                return key
 
             async def get_llm_response(context: ProjectContext, timeout: float = 120.0) -> DevOpsFiles:
+                """Generate DevOps files using OpenRouter API."""
                 try:
-                    model = get_gemini_client()
+                    api_key = get_openrouter_key()
                 except ValueError:
                     raise HTTPException(status_code=500, detail="API key not configured")
 
@@ -256,35 +256,55 @@ Files:
 
 Return ONLY valid JSON with keys: dockerfile, compose, github_action."""
 
-                def _call_sync():
-                    try:
-                        resp = model.generate_content(prompt, generation_config={"temperature": 0.1, "max_output_tokens": 3000})
-                        if not resp or not hasattr(resp, 'text'):
-                            raise ValueError("Invalid Gemini response")
-                        return resp.text.strip()
-                    except Exception as e:
-                        logger.error(f"Gemini error: {e}")
-                        raise
-                
                 try:
-                    if hasattr(asyncio, 'to_thread'):
-                        text = await asyncio.wait_for(asyncio.to_thread(_call_sync), timeout=timeout)
-                    else:
-                        loop = asyncio.get_event_loop()
-                        text = await asyncio.wait_for(loop.run_in_executor(None, _call_sync), timeout=timeout)
-                    
-                    if text.startswith("```json"):
-                        text = text.replace("```json", "").replace("```", "").strip()
-                    elif text.startswith("```"):
-                        text = text.replace("```", "").strip()
-                    
-                    data = json.loads(text)
-                    return DevOpsFiles(dockerfile=data.get('dockerfile'), compose=data.get('compose'), github_action=data.get('github_action'))
-                except asyncio.TimeoutError:
+                    import httpx
+                    async with httpx.AsyncClient(timeout=timeout) as client:
+                        response = await client.post(
+                            "https://openrouter.ai/api/v1/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {api_key}",
+                                "Content-Type": "application/json",
+                                "HTTP-Referer": "https://github.com/hamzaparvez-dev/spectra-cli",
+                                "X-Title": "Spectra CLI"
+                            },
+                            json={
+                                "model": "google/gemini-2.0-flash-exp:free",
+                                "messages": [
+                                    {"role": "system", "content": "You are an expert DevOps engineer. Return only valid JSON."},
+                                    {"role": "user", "content": prompt}
+                                ],
+                                "temperature": 0.1,
+                                "max_tokens": 3000,
+                                "response_format": {"type": "json_object"}
+                            }
+                        )
+                        
+                        response.raise_for_status()
+                        data = response.json()
+                        text = data["choices"][0]["message"]["content"]
+                        
+                        # Parse JSON response
+                        if text.startswith("```json"):
+                            text = text.replace("```json", "").replace("```", "").strip()
+                        elif text.startswith("```"):
+                            text = text.replace("```", "").strip()
+                        
+                        result = json.loads(text)
+                        return DevOpsFiles(
+                            dockerfile=result.get('dockerfile'),
+                            compose=result.get('compose'),
+                            github_action=result.get('github_action')
+                        )
+                except httpx.TimeoutException:
                     raise HTTPException(status_code=504, detail=f"Timeout after {timeout}s")
+                except httpx.HTTPStatusError as e:
+                    logger.error(f"OpenRouter API error: {e.response.status_code} - {e.response.text}")
+                    raise HTTPException(status_code=500, detail=f"OpenRouter API error: {e.response.status_code}")
                 except json.JSONDecodeError as e:
+                    logger.error(f"JSON parse error: {e}")
                     raise HTTPException(status_code=500, detail=f"JSON parse error: {e}")
                 except Exception as e:
+                    logger.error(f"AI error: {str(e)}")
                     raise HTTPException(status_code=500, detail=f"AI error: {str(e)}")
 
             @app.post("/")
@@ -378,7 +398,7 @@ Return ONLY valid JSON with keys: dockerfile, compose, github_action."""
         except Exception as e:
             logger.error(f"FastAPI app creation failed: {e}")
             logger.error(traceback.format_exc())
-    app = None
+            app = None
 
     # Fallback app creation
     if app is None:

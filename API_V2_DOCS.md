@@ -25,7 +25,7 @@ When a user requests files for these stacks, the API returns them instantly (<1 
 For custom stacks or projects that don't match templates:
 1. API creates a job ID and returns immediately (<1 second)
 2. Job context is stored in Redis/Upstash
-3. Background processor calls the LLM (using `gemini-2.5-flash` for speed)
+3. Background processor calls the LLM via OpenRouter (using `google/gemini-2.0-flash-exp:free` for speed)
 4. CLI polls `/job/{job_id}` every 3 seconds until completion
 5. Results are returned to the CLI
 
@@ -36,8 +36,8 @@ For custom stacks or projects that don't match templates:
 Set these in your Vercel project:
 
 ```bash
-# Required: Gemini API key (kept as OPENAI_API_KEY for compatibility)
-OPENAI_API_KEY=your-gemini-api-key
+# Required: OpenRouter API key (get from https://openrouter.ai/keys - free tier available)
+OPENROUTER_API_KEY=your-openrouter-api-key
 
 # Optional: Upstash Redis (for production job queue)
 # If not set, uses in-memory storage (not suitable for production)
@@ -161,8 +161,9 @@ spectra init .
 
 ### Jobs Stuck in "pending"
 - Check if `/process/{job_id}` endpoint is accessible
-- Verify `OPENAI_API_KEY` is set correctly
+- Verify `OPENROUTER_API_KEY` is set correctly
 - Check Vercel function logs for errors
+- Verify OpenRouter API status at https://openrouter.ai/status
 
 ### Redis Connection Issues
 - Verify `UPSTASH_REDIS_URL` and `UPSTASH_REDIS_TOKEN` are correct

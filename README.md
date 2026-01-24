@@ -102,7 +102,7 @@ See [API_V2_DOCS.md](API_V2_DOCS.md) for detailed architecture documentation.
   ```
 
 **API Server (Vercel):**
-- `OPENAI_API_KEY` - Gemini API key (kept as `OPENAI_API_KEY` for compatibility)
+- `OPENROUTER_API_KEY` - OpenRouter API key (get from https://openrouter.ai/keys - free tier available)
 - `UPSTASH_REDIS_URL` - Upstash Redis URL (optional, for production job queue)
 - `UPSTASH_REDIS_TOKEN` - Upstash Redis token (optional)
 
@@ -128,10 +128,11 @@ spectra version
    pip install -r api/requirements.txt
    ```
 
-2. **Set OpenAI API key:**
+2. **Set OpenRouter API key:**
    ```bash
-   export OPENAI_API_KEY='your-api-key-here'
+   export OPENROUTER_API_KEY='your-openrouter-api-key-here'
    ```
+   Get your free API key from https://openrouter.ai/keys (no credit card required)
 
 3. **Run the API server:**
    ```bash
@@ -165,8 +166,9 @@ spectra version
 
 4. **Set environment variables:**
    ```bash
-   vercel env add OPENAI_API_KEY
-   # Paste your OpenAI API key when prompted
+   vercel env add OPENROUTER_API_KEY
+   # Paste your OpenRouter API key when prompted
+   # Get free key from https://openrouter.ai/keys
    ```
 
 5. **Redeploy to apply changes:**
@@ -210,7 +212,7 @@ spectra-cli/
 ## Requirements
 
 - Python 3.8 or higher
-- Gemini API key (for the API server) - Set as `OPENAI_API_KEY` environment variable
+- OpenRouter API key (for the API server) - Get free key from https://openrouter.ai/keys
 - Internet connection (to call the API)
 - Upstash Redis (optional, for production job queue)
 
@@ -230,8 +232,9 @@ spectra-cli/
 
 ### API errors
 
-- Verify `OPENAI_API_KEY` is set correctly on the server (should be your Gemini API key)
-- Check your Gemini API account has sufficient quota
+- Verify `OPENROUTER_API_KEY` is set correctly on the server
+- Get your free API key from https://openrouter.ai/keys (no credit card required)
+- Check OpenRouter API status at https://openrouter.ai/status
 - For job queue issues, verify `UPSTASH_REDIS_URL` and `UPSTASH_REDIS_TOKEN` are set (optional)
 - See [API_V2_DOCS.md](API_V2_DOCS.md) for troubleshooting
 

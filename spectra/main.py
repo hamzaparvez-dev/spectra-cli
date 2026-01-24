@@ -91,14 +91,9 @@ def init(
         print(":x: [red]Could not analyze project. Exiting.[/red]")
         raise typer.Exit(1)
         
-    spinner = Spinner(
-        "dots",
-        text=" :brain: Asking the AI brain to generate DevOps files..."
-    )
-    generated_files = None
+    print("\n🧠 [cyan]Asking the AI brain to generate DevOps files...[/cyan]")
     
-    with spinner:
-        generated_files = asyncio.run(get_deployment_files(project_context))
+    generated_files = asyncio.run(get_deployment_files(project_context))
         
     if not generated_files:
         print(":x: [red]Failed to get a response from the AI brain. Exiting.[/red]")

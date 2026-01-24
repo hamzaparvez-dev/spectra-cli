@@ -1,18 +1,24 @@
 {
   "version": 2,
+  "builds": [
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python"
+    }
+  ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "index.py"
+      "dest": "api/index.py"
     }
   ],
   "env": {
     "PYTHON_VERSION": "3.11"
   },
   "functions": {
-    "index.py": {
+    "api/index.py": {
       "maxDuration": 300,
-      "includeFiles": "**/*.py"
+      "memory": 1024
     }
   }
 }
