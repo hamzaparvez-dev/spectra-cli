@@ -552,6 +552,43 @@ TEMPLATES: Dict[str, DevOpsFiles] = {
 }
 
 
+def get_template_for_stack(stack: str) -> Optional[DevOpsFiles]:
+    """Get pre-generated template for a given stack.
+    
+    Args:
+        stack: Stack identifier (e.g., 'nodejs', 'python', 'go')
+        
+    Returns:
+        DevOpsFiles object if template exists, None otherwise
+    """
+    # Normalize stack name to lowercase
+    stack_key = stack.lower().strip()
+    
+    # Direct lookup
+    if stack_key in TEMPLATES:
+        return TEMPLATES[stack_key]
+    
+    # Try common variations
+    variations = {
+        'node': 'nodejs',
+        'node.js': 'nodejs',
+        'js': 'nodejs',
+        'javascript': 'nodejs',
+        'py': 'python',
+        'python3': 'python',
+        'golang': 'go',
+        'rust-lang': 'rust',
+    }
+    
+    if stack_key in variations:
+        normalized = variations[stack_key]
+        if normalized in TEMPLATES:
+            return TEMPLATES[normalized]
+    
+    return None
+
+
+
 def get_template(stack: str) -> Optional[DevOpsFiles]:
     """
     Get a cached template for a common stack.
