@@ -4,7 +4,7 @@ This module provides pre-generated templates for common stacks to enable
 instant (<1s) response times for 80% of requests.
 """
 
-from typing import Optional
+from typing import Optional, Dict
 from api.models import DevOpsFiles
 
 
