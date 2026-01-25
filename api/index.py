@@ -403,24 +403,53 @@ Return ONLY valid JSON with keys: dockerfile, compose, github_action."""
     # Fallback app creation
     if app is None:
         try:
-            if not FALLBACK_MODE and FastAPI:
-                app = FastAPI(title="Spectra API", version="0.2.0")
-                @app.get("/health")
-                def h(): return {"status": "ok", "mode": "minimal"}
-                @app.get("/")
-                def r():
-                    return {"service": "Spectra API", "version": "0.2.0", "status": "minimal"}
-            elif FALLBACK_MODE:
-                try:
-                    from fastapi import FastAPI
-                    app = FastAPI(title="Spectra API", version="0.2.0")
-                    @app.get("/health")
-                    def h(): return {"status": "ok", "mode": "fallback"}
-                except Exception:
-                    app = _create_minimal_asgi_app()
-            else:
-                app = _create_minimal_asgi_app()
-        except Exception as e:
+            from http.server import BaseHTTPRequestHandler
+            
+            class handler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    self.send_response(200)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    message = json.dumps({
+                        "service": "Spectra API",
+                        "version": "0.2.0",
+                        "status": "minimal",
+                        "error": "FastAPI initialization failed"
+                    })
+                    self.wfile.write(message.encode())
+                
+                def do_POST(self):
+                    self.do_GET()
+        except Exception:
+            pass
+
+# Export for Vercel
+if app and not isinstance(app, type):
+    # Wrap FastAPI app with Mangum for AWS Lambda/Vercel
+    try:
+        from mangum import Mangum
+        handler = Mangum(app, lifespan="off")
+    except Exception as e:
+        logger.error(f"Failed to create Mangum handler: {e}")
+        # Fallback: export app directly
+        handler = app
+else:
+    # If app is None or not properly initialized, create minimal handler
+    from http.server import BaseHTTPRequestHandler
+    
+    class handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(500)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            message = json.dumps({
+                "error": "API initialization failed",
+                "service": "Spectra API"
+            })
+            self.wfile.write(message.encode())
+        
+        def do_POST(self):
+            self.do_GET()
             logger.error(f"Fallback app creation failed: {e}")
             app = _create_minimal_asgi_app()
 
