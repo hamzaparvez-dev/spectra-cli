@@ -1,480 +1,230 @@
-"""FastAPI serverless function for Spectra API brain with async job queue."""
+"""Spectra API - Production-ready FastAPI application for DevOps file generation.
 
-# CRITICAL: This module must NEVER crash during import
-# Vercel requires a valid 'app' variable to exist, or Python exits with status 1
+This is a clean, minimal version optimized for Vercel deployment.
+"""
 
-import sys
 import os
+import sys
 import json
-import traceback
-import importlib.util
+import logging
+from typing import Optional, Dict, Any
 
-# Initialize app to None - will be set below
-app = None
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s: %(message)s',
+    stream=sys.stdout
+)
+logger = logging.getLogger(__name__)
 
-# Create minimal ASGI app function - defined early to avoid dependency issues
-def _create_minimal_asgi_app():
-    """Create minimal ASGI app that always works."""
-    class MinimalASGIApp:
-        def __init__(self):
-            self.title = "Spectra API"
-            self.version = "0.2.0"
-        async def __call__(self, scope, receive, send):
-            if scope["type"] == "http":
-                body = json.dumps({"error": "Service unavailable", "message": "Initialization failed"}).encode()
-                await send({"type": "http.response.start", "status": 503, "headers": [[b"content-type", b"application/json"]]})
-                await send({"type": "http.response.body", "body": body})
-    return MinimalASGIApp()
-
-# Safe import function that catches ALL errors
-def _safe_import(module_name):
-    """Safely import a module, returning None if import fails."""
-    try:
-        try:
-            api_dir = os.path.dirname(os.path.abspath(__file__))
-            if api_dir and api_dir not in sys.path:
-                sys.path.insert(0, api_dir)
-        except Exception:
-            pass
-        try:
-            return __import__(module_name, fromlist=[''])
-        except Exception:
-            try:
-                spec = importlib.util.find_spec(module_name)
-                if spec and spec.loader:
-                    module = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(module)
-                    return module
-            except Exception:
-                pass
-        return None
-    except BaseException:
-        return None
-
-# Wrap EVERYTHING in try-except to prevent any crash
+# Import dependencies
 try:
-    import logging
-    import asyncio
-    import uuid
-    from typing import Optional, Dict, Any
+    from fastapi import FastAPI, HTTPException
+    from fastapi.middleware.cors import CORSMiddleware
+    from pydantic import BaseModel
+    import httpx
+except ImportError as e:
+    logger.error(f"Failed to import required dependencies: {e}")
+    raise
 
-    # Initialize logger with fallback
-    logger = None
+# Import local modules
+try:
+    from api.models import ProjectContext, DevOpsFiles, JobResponse, JobStatus
+    from api.templates import get_template_for_stack
+    from api.job_queue import create_job, get_job, update_job_status
+    logger.info("Successfully imported all modules")
+except ImportError as e:
+    logger.error(f"Failed to import local modules: {e}")
+    raise
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Spectra API",
+    description="AI-powered DevOps file generator",
+    version="0.2.0"
+)
+
+# CORS configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# OpenRouter configuration
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+MODEL = "google/gemini-2.0-flash-exp:free"
+
+@app.get("/")
+async def root():
+    """Root endpoint with API information."""
+    return {
+        "service": "Spectra API",
+        "version": "0.2.0",
+        "status": "online",
+        "endpoints": {
+            "POST /": "Generate DevOps files or create async job",
+            "POST /jobs": "Create a new job",
+            "GET /job/{job_id}": "Get job status and result",
+            "POST /process/{job_id}": "Trigger job processing",
+            "GET /health": "Health check"
+        }
+    }
+
+@app.get("/health")
+async def health():
+    """Health check endpoint."""
+    return {
+        "status": "ok",
+        "service": "spectra-api",
+        "version": "0.2.0"
+    }
+
+@app.post("/", response_model=DevOpsFiles)
+async def generate_devops_files(context: ProjectContext):
+    """Generate DevOps files for a project."""
     try:
-        logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s', force=True)
-        logger = logging.getLogger(__name__)
-        logger.setLevel(logging.INFO)
-    except Exception:
-        class SimpleLogger:
-            def info(self, msg): print(f"INFO: {msg}", file=sys.stderr, flush=True)
-            def warning(self, msg): print(f"WARNING: {msg}", file=sys.stderr, flush=True)
-            def error(self, msg): print(f"ERROR: {msg}", file=sys.stderr, flush=True)
-            def setLevel(self, level): pass
-        logger = SimpleLogger()
+        # Try template matching first (fast path)
+        template = get_template_for_stack(context.stack)
+        if template:
+            logger.info(f"Template cache hit for stack: {context.stack}")
+            return template
+        
+        # If no template, use LLM (slow path)
+        if not OPENROUTER_API_KEY:
+            raise HTTPException(
+                status_code=500,
+                detail="OpenRouter API key not configured"
+            )
+        
+        logger.info(f"Generating custom files for stack: {context.stack}")
+        
+        # Create prompt for LLM
+        prompt = f"""Generate production-ready DevOps files for a {context.stack} project.
 
-    # Add api directory to path
-    try:
-        api_dir = os.path.dirname(os.path.abspath(__file__))
-        if api_dir and api_dir not in sys.path:
-            sys.path.insert(0, api_dir)
-    except Exception:
-        try:
-            for p in ['/var/task/api', '/var/task', os.getcwd()]:
-                if os.path.exists(p) and p not in sys.path:
-                    sys.path.insert(0, p)
-        except Exception:
-            pass
+Project files:
+{json.dumps(context.files, indent=2)}
 
-    # Import pydantic with fallback
-    BaseModel = None
-    try:
-        from pydantic import BaseModel
-    except Exception:
-        class BaseModel:
-            def __init__(self, **kwargs):
-                for k, v in kwargs.items():
-                    setattr(self, k, v)
-            def dict(self):
-                return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
+Generate:
+1. Dockerfile - Multi-stage, optimized, with health checks
+2. docker-compose.yml - For local development
+3. GitHub Actions CI/CD workflow
 
-    # Import FastAPI
-    FALLBACK_MODE = False
-    FastAPI = None
-    HTTPException = None
-    CORSMiddleware = None
-    try:
-        from fastapi import FastAPI, HTTPException
-        from fastapi.middleware.cors import CORSMiddleware
-    except Exception as e:
-        FALLBACK_MODE = True
-        logger.error(f"FastAPI import failed: {e}")
+Return ONLY valid JSON in this exact format:
+{{
+  "dockerfile": "...",
+  "compose": "...",
+  "github_action": "..."
+}}"""
 
-    # Import local modules - use safe import for each
-    ProjectContext = None
-    DevOpsFiles = None
-    JobResponse = None
-    JobStatus = None
-    get_template = None
-    create_job = None
-    get_job = None
-    update_job_status = None
-
-    # Try importing models
-    try:
-        models_module = _safe_import('models')
-        if models_module:
-            ProjectContext = getattr(models_module, 'ProjectContext', None)
-            DevOpsFiles = getattr(models_module, 'DevOpsFiles', None)
-            JobResponse = getattr(models_module, 'JobResponse', None)
-            JobStatus = getattr(models_module, 'JobStatus', None)
-            if all([ProjectContext, DevOpsFiles, JobResponse, JobStatus]):
-                logger.info("Imported models successfully")
-            else:
-                raise AttributeError("Missing model classes")
-        else:
-            raise ImportError("Could not load models module")
-    except Exception as e:
-        logger.error(f"Failed to import models: {e}")
-        class ProjectContext(BaseModel):
-            stack: str = "unknown"
-            files: Dict[str, str] = {}
-        class DevOpsFiles(BaseModel):
-            dockerfile: Optional[str] = None
-            compose: Optional[str] = None
-            github_action: Optional[str] = None
-        class JobResponse(BaseModel):
-            job_id: str = ""
-            status: str = "pending"
-        class JobStatus(BaseModel):
-            job_id: str = ""
-            status: str = "pending"
-            result: Optional[DevOpsFiles] = None
-            error: Optional[str] = None
-    
-    # Try importing templates - this is the risky one
-    try:
-        templates_module = _safe_import('templates')
-        if templates_module:
-            get_template = getattr(templates_module, 'get_template', None)
-            if get_template:
-                logger.info("Imported templates successfully")
-            else:
-                raise AttributeError("get_template not found")
-        else:
-            raise ImportError("Could not load templates module")
-    except Exception as e:
-        logger.error(f"Failed to import templates: {e}")
-        logger.error(traceback.format_exc())
-        def get_template(stack):
-            return None
-
-    # Try importing job_queue
-    try:
-        job_queue_module = _safe_import('job_queue')
-        if job_queue_module:
-            create_job = getattr(job_queue_module, 'create_job', None)
-            get_job = getattr(job_queue_module, 'get_job', None)
-            update_job_status = getattr(job_queue_module, 'update_job_status', None)
-            if all([create_job, get_job, update_job_status]):
-                logger.info("Imported job_queue successfully")
-            else:
-                raise AttributeError("Missing job_queue functions")
-        else:
-            raise ImportError("Could not load job_queue module")
-    except Exception as e:
-        logger.error(f"Failed to import job_queue: {e}")
-        def create_job(context):
-            raise RuntimeError("Job creation unavailable")
-        def get_job(job_id):
-            return None
-        def update_job_status(job_id, status, result=None, error=None):
-            pass
-
-    # Initialize app
-    _mangum_available = False
-    mangum_handler = None
-
-    if not FALLBACK_MODE and FastAPI:
-        try:
-            app = FastAPI(title="Spectra API", description="AI-powered DevOps file generator", version="0.2.0")
-
-            def parse_cors_origins():
-                origins_str = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
-                if not origins_str:
-                    return [], []
-                regular = []
-                regex = []
-                for o in origins_str.split(","):
-                    o = o.strip()
-                    if not o:
-                        continue
-                    if o == "*":
-                        regular.append(o)
-                    elif o.startswith(("http://", "https://")):
-                        regular.append(o.rstrip("/"))
-                    elif o.startswith("regex:"):
-                        p = o[6:].strip()
-                        if p:
-                            regex.append(p)
-                return regular, regex
-
-            regular_origins, regex_origins = parse_cors_origins()
-            cors_creds = os.getenv("CORS_ALLOW_CREDENTIALS", "true").lower() == "true"
-            if cors_creds and (not regular_origins and not regex_origins or "*" in regular_origins):
-                cors_creds = False
-            if not regular_origins and not regex_origins and not cors_creds:
-                regular_origins = ["*"]
-
-            cors_config = {"allow_credentials": cors_creds, "allow_methods": ["*"], "allow_headers": ["*"]}
-            if regular_origins:
-                cors_config["allow_origins"] = regular_origins
-            if regex_origins:
-                cors_config["allow_origin_regex"] = "|".join(f"({p})" for p in regex_origins)
-
-            app.add_middleware(CORSMiddleware, **cors_config)
-
-            def get_openrouter_key():
-                """Get OpenRouter API key from environment."""
-                key = os.getenv("OPENROUTER_API_KEY")
-                if not key:
-                    raise ValueError("OPENROUTER_API_KEY not set")
-                return key
-
-            async def get_llm_response(context: ProjectContext, timeout: float = 120.0) -> DevOpsFiles:
-                """Generate DevOps files using OpenRouter API."""
-                try:
-                    api_key = get_openrouter_key()
-                except ValueError:
-                    raise HTTPException(status_code=500, detail="API key not configured")
-
-                files_str = "\n".join([f"--- {f} ---\n{c}\n" for f, c in context.files.items()])
-                prompt = f"""You are 'Spectra', an expert DevOps engineer. Generate production-ready DevOps files.
-
-Project: {context.stack}
-Files:
-{files_str}
-
-Return ONLY valid JSON with keys: dockerfile, compose, github_action."""
-
-                try:
-                    import httpx
-                    async with httpx.AsyncClient(timeout=timeout) as client:
-                        response = await client.post(
-                            "https://openrouter.ai/api/v1/chat/completions",
-                            headers={
-                                "Authorization": f"Bearer {api_key}",
-                                "Content-Type": "application/json",
-                                "HTTP-Referer": "https://github.com/hamzaparvez-dev/spectra-cli",
-                                "X-Title": "Spectra CLI"
-                            },
-                            json={
-                                "model": "google/gemini-2.0-flash-exp:free",
-                                "messages": [
-                                    {"role": "system", "content": "You are an expert DevOps engineer. Return only valid JSON."},
-                                    {"role": "user", "content": prompt}
-                                ],
-                                "temperature": 0.1,
-                                "max_tokens": 3000,
-                                "response_format": {"type": "json_object"}
-                            }
-                        )
-                        
-                        response.raise_for_status()
-                        data = response.json()
-                        text = data["choices"][0]["message"]["content"]
-                        
-                        # Parse JSON response
-                        if text.startswith("```json"):
-                            text = text.replace("```json", "").replace("```", "").strip()
-                        elif text.startswith("```"):
-                            text = text.replace("```", "").strip()
-                        
-                        result = json.loads(text)
-                        return DevOpsFiles(
-                            dockerfile=result.get('dockerfile'),
-                            compose=result.get('compose'),
-                            github_action=result.get('github_action')
-                        )
-                except httpx.TimeoutException:
-                    raise HTTPException(status_code=504, detail=f"Timeout after {timeout}s")
-                except httpx.HTTPStatusError as e:
-                    logger.error(f"OpenRouter API error: {e.response.status_code} - {e.response.text}")
-                    raise HTTPException(status_code=500, detail=f"OpenRouter API error: {e.response.status_code}")
-                except json.JSONDecodeError as e:
-                    logger.error(f"JSON parse error: {e}")
-                    raise HTTPException(status_code=500, detail=f"JSON parse error: {e}")
-                except Exception as e:
-                    logger.error(f"AI error: {str(e)}")
-                    raise HTTPException(status_code=500, detail=f"AI error: {str(e)}")
-
-            @app.post("/")
-            async def generate_devops(context: ProjectContext):
-                try:
-                    template = get_template(context.stack) if get_template else None
-                    if template:
-                        return template.dict() if hasattr(template, 'dict') else dict(template)
-                    ctx_dict = context.dict() if hasattr(context, 'dict') else dict(context)
-                    job_id = create_job(ctx_dict) if create_job else str(uuid.uuid4())
-                    return {"job_id": job_id, "status": "pending"}
-                except Exception as e:
-                    logger.error(f"generate_devops error: {e}")
-                    raise HTTPException(status_code=500, detail=str(e))
-
-            @app.post("/jobs")
-            async def create_job_endpoint(context: ProjectContext):
-                try:
-                    template = get_template(context.stack) if get_template else None
-                    if template:
-                        return {"status": "completed", "result": template.dict() if hasattr(template, 'dict') else dict(template)}
-                    ctx_dict = context.dict() if hasattr(context, 'dict') else dict(context)
-                    job_id = create_job(ctx_dict) if create_job else str(uuid.uuid4())
-                    return JobResponse(job_id=job_id, status="pending")
-                except Exception as e:
-                    raise HTTPException(status_code=500, detail=str(e))
-
-            @app.get("/job/{job_id}")
-            async def get_job_status(job_id: str):
-                data = get_job(job_id) if get_job else None
-                if not data:
-                    raise HTTPException(status_code=404, detail="Job not found")
-                result = None
-                if data.get("result"):
-                    try:
-                        result = DevOpsFiles(**data["result"])
-                    except Exception:
-                        result = None
-                return JobStatus(job_id=job_id, status=data.get("status", "unknown"), result=result, error=data.get("error"))
-
-            @app.post("/process/{job_id}")
-            async def process_job(job_id: str):
-                data = get_job(job_id) if get_job else None
-                if not data:
-                    raise HTTPException(status_code=404, detail="Job not found")
-                if data.get("status") != "pending":
-                    return {"message": f"Job {data.get('status', 'unknown')}"}
-                if update_job_status:
-                    update_job_status(job_id, "processing")
-                try:
-                    ctx = ProjectContext(**data.get("context", {}))
-                    timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "120.0"))
-                    result = await get_llm_response(ctx, timeout=timeout)
-                    if update_job_status:
-                        update_job_status(job_id, "completed", result=result.dict() if hasattr(result, 'dict') else dict(result))
-                    return {"message": "Job processed", "job_id": job_id}
-                except HTTPException:
-                    raise
-                except Exception as e:
-                    if update_job_status:
-                        update_job_status(job_id, "failed", error=str(e))
-                    raise HTTPException(status_code=500, detail=str(e))
-
-            @app.get("/health")
-            def health():
-                return {"status": "ok", "service": "spectra-api", "version": "0.2.0"}
-
-            @app.get("/")
-            def root():
-                """API information endpoint."""
-                return {
-                    "service": "Spectra API",
-                    "version": "0.2.0",
-                    "status": "online",
-                    "endpoints": {
-                        "POST /": "Generate DevOps files or create async job",
-                        "POST /jobs": "Create a new job",
-                        "GET /job/{job_id}": "Get job status and result",
-                        "POST /process/{job_id}": "Trigger job processing",
-                        "GET /health": "Health check"
-                    }
+        # Call OpenRouter API
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                OPENROUTER_API_URL,
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://spectra-cli.vercel.app",
+                    "X-Title": "Spectra CLI"
+                },
+                json={
+                    "model": MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3
                 }
-
-            try:
-                from mangum import Mangum
-                mangum_handler = Mangum(app, lifespan="off")
-                _mangum_available = True
-            except Exception:
-                _mangum_available = False
-
-        except Exception as e:
-            logger.error(f"FastAPI app creation failed: {e}")
-            logger.error(traceback.format_exc())
-            app = None
-
-    # Fallback app creation
-    if app is None:
-        try:
-            from http.server import BaseHTTPRequestHandler
+            )
             
-            class handler(BaseHTTPRequestHandler):
-                def do_GET(self):
-                    self.send_response(200)
-                    self.send_header('Content-type', 'application/json')
-                    self.end_headers()
-                    message = json.dumps({
-                        "service": "Spectra API",
-                        "version": "0.2.0",
-                        "status": "minimal",
-                        "error": "FastAPI initialization failed"
-                    })
-                    self.wfile.write(message.encode())
-                
-                def do_POST(self):
-                    self.do_GET()
-        except Exception:
-            pass
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"OpenRouter API error: {response.text}"
+                )
+            
+            result = response.json()
+            content = result["choices"][0]["message"]["content"]
+            
+            # Parse JSON from response
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+            
+            files = json.loads(content)
+            return DevOpsFiles(**files)
+            
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse LLM response: {e}")
+        raise HTTPException(status_code=500, detail="Failed to parse AI response")
+    except Exception as e:
+        logger.error(f"Error generating files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/jobs", response_model=JobResponse)
+async def create_job_endpoint(context: ProjectContext):
+    """Create a new async job."""
+    try:
+        job_id = create_job(context.dict())
+        return JobResponse(job_id=job_id, status="pending")
+    except Exception as e:
+        logger.error(f"Failed to create job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/job/{job_id}", response_model=JobStatus)
+async def get_job_status(job_id: str):
+    """Get job status and result."""
+    try:
+        job = get_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        
+        return JobStatus(
+            job_id=job_id,
+            status=job["status"],
+            result=DevOpsFiles(**job["result"]) if job.get("result") else None,
+            error=job.get("error")
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/process/{job_id}")
+async def process_job(job_id: str):
+    """Trigger async job processing."""
+    try:
+        job = get_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        
+        if job["status"] != "pending":
+            return {"message": "Job already processed"}
+        
+        # Update status to processing
+        update_job_status(job_id, "processing")
+        
+        # Process the job
+        context = ProjectContext(**job["context"])
+        result = await generate_devops_files(context)
+        
+        # Update with result
+        update_job_status(job_id, "completed", result=result.dict())
+        
+        return {"message": "Job processed successfully"}
+        
+    except Exception as e:
+        logger.error(f"Failed to process job: {e}")
+        update_job_status(job_id, "failed", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Export for Vercel
-if app and not isinstance(app, type):
-    # Wrap FastAPI app with Mangum for AWS Lambda/Vercel
-    try:
-        from mangum import Mangum
-        handler = Mangum(app, lifespan="off")
-    except Exception as e:
-        logger.error(f"Failed to create Mangum handler: {e}")
-        # Fallback: export app directly
-        handler = app
-else:
-    # If app is None or not properly initialized, create minimal handler
-    from http.server import BaseHTTPRequestHandler
-    
-    class handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(500)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            message = json.dumps({
-                "error": "API initialization failed",
-                "service": "Spectra API"
-            })
-            self.wfile.write(message.encode())
-        
-        def do_POST(self):
-            self.do_GET()
-            logger.error(f"Fallback app creation failed: {e}")
-            app = _create_minimal_asgi_app()
-
-    def handler(event=None, context=None):
-        try:
-            if not FALLBACK_MODE and _mangum_available and mangum_handler:
-                try:
-                    r = mangum_handler(event, context)
-                    if isinstance(r, dict) and "statusCode" in r:
-                        return r
-                    return {"statusCode": 200, "headers": {"content-type": "application/json"}, "body": json.dumps(r) if not isinstance(r, str) else r}
-                except Exception:
-                    pass
-            return {"statusCode": 503, "headers": {"content-type": "application/json"}, "body": json.dumps({"error": "Unavailable"})}
-        except Exception:
-            return {"statusCode": 500, "headers": {"content-type": "application/json"}, "body": json.dumps({"error": "Error"})}
-
-except BaseException as e:
-    print(f"FATAL MODULE ERROR: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
-    print(traceback.format_exc(), file=sys.stderr, flush=True)
-    app = _create_minimal_asgi_app()
-    
-    def handler(event=None, context=None):
-        return {"statusCode": 500, "headers": {"content-type": "application/json"}, "body": json.dumps({"error": "Fatal error"})}
-
-# Final safety check - app MUST exist
-if app is None:
-    app = _create_minimal_asgi_app()
+try:
+    from mangum import Mangum
+    handler = Mangum(app, lifespan="off")
+    logger.info("Mangum handler created successfully")
+except Exception as e:
+    logger.error(f"Failed to create Mangum handler: {e}")
+    handler = app
