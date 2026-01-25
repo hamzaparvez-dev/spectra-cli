@@ -1,12 +1,11 @@
-"""Pre-generated DevOps file templates for common stacks.
+"""Template cache for common DevOps stacks.
 
-This module provides instant responses for 80% of users with common stacks,
-eliminating the need for LLM calls and solving the timeout issue.
+This module provides pre-generated templates for common stacks to enable
+instant (<1s) response times for 80% of requests.
 """
 
-from typing import Dict, Optional
-# Direct import since all files are in the same directory
-from models import DevOpsFiles
+from typing import Optional
+from api.models import DevOpsFiles
 
 
 # Template for Python projects
